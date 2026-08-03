@@ -211,6 +211,16 @@ Render's cron is paid, and an in-bot timer would be unreliable on an instance
 that restarts often. The ingest **upserts and never deletes**, so it's safe to
 run against live data — verified with 122 active claims in place. The bot itself
 never calls the wiki; a wiki outage cannot affect rolls.
+
+Never-deleting protects against losing cards but not against a *partial* parse:
+if the wiki renames `{{Costume page}}`, most costumes are skipped and only the
+few that still parse get written — the pool keeps its size, so nothing looks
+wrong, while any changed rarity is silently applied and re-tiers cards people
+already own. The ingest therefore **refuses to write when the parse covers less
+than 90% of the existing card count** (`MIN_COVERAGE`), exiting 1 so the weekly
+job goes red instead of quietly corrupting rarities. `--force` overrides it;
+`--limit` is exempt, being an explicitly partial run; an empty table is exempt
+so a fresh install still seeds.
 `marvelrivalsapi.com` returned 502 repeatedly during development — hence the
 demotion to fallback.
 

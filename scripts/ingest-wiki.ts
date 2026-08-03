@@ -7,6 +7,7 @@
  *
  *   npm run ingest:wiki -- --dry     inspect, write nothing
  *   npm run ingest:wiki -- --limit 50
+ *   npm run ingest:wiki -- --force   write even if the parse looks short
  *
  * Card ids are the in-game costume ids from the infobox, so re-running is
  * idempotent and cards keep their identity across ingests.
@@ -19,10 +20,23 @@ import { normaliseRarity, slug } from "../src/lib/rarity.js";
 const API = "https://marvelrivals.fandom.com/api.php";
 const UA = "GachaMRBot/0.1 (Discord gacha bot; contact via repo)";
 const DRY = process.argv.includes("--dry");
+const FORCE = process.argv.includes("--force");
 const LIMIT = (() => {
   const i = process.argv.indexOf("--limit");
   return i >= 0 ? Number(process.argv[i + 1]) : Infinity;
 })();
+
+/**
+ * Minimum share of the existing pool a full parse must still produce.
+ *
+ * The upsert never deletes, which protects against losing cards but NOT against
+ * a partial parse: rename `{{Costume page}}` upstream and most costumes are
+ * skipped, yet the handful that still parse are written anyway. Nothing looks
+ * broken — the pool keeps its old size — but any rarity that changed has been
+ * silently applied, re-tiering cards people already own and moving their sell
+ * value. Refuse the write instead, and make the operator pass --force.
+ */
+const MIN_COVERAGE = 0.9;
 
 async function mw(params: Record<string, string>): Promise<any> {
   const qs = new URLSearchParams({ ...params, format: "json" });
@@ -329,6 +343,26 @@ async function main() {
     console.dir(cardRows.slice(0, 3), { depth: null });
     console.log("\n--dry: nothing written.");
     process.exit(0);
+  }
+
+  // --limit is an explicitly partial run, so the coverage check doesn't apply.
+  if (Number.isFinite(LIMIT)) {
+    console.log(`\n--limit set: skipping the coverage check.`);
+  } else {
+    const [existing] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.cards);
+    const have = existing?.n ?? 0;
+    if (have > 0 && cardRows.length < have * MIN_COVERAGE) {
+      const pct = ((cardRows.length / have) * 100).toFixed(1);
+      console.error(
+        `\nParse covers only ${cardRows.length}/${have} existing cards (${pct}%).` +
+          `\nThat usually means the wiki changed its infobox, not that costumes were removed.` +
+          `\nWriting anyway would silently re-tier cards that people already own.` +
+          (FORCE ? "\n--force set: writing regardless." : "\nRe-run with --force if this is expected."),
+      );
+      if (!FORCE) process.exit(1);
+    }
   }
 
   await db.transaction(async (tx) => {

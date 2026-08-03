@@ -42,8 +42,12 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DB_SSL: "true"
+        # node, not `npx tsx -e`: tsx compiles eval input as CJS, which rejects
+        # the top-level awaits below outright, and only evaluates the first line
+        # of a multi-line string — so this step silently wrote nothing and still
+        # exited 0. The snippet is plain JS and never needed tsx.
         run: |
-          npx tsx -e "
+          node --input-type=module -e "
           import postgres from 'postgres';
           const sql = postgres(process.env.DATABASE_URL, { max: 1, ssl: 'require' });
           const rows = await sql\`SELECT rarity, count(*)::int AS n FROM cards GROUP BY rarity ORDER BY n DESC\`;

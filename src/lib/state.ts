@@ -104,6 +104,27 @@ export async function consumeClaim(
   return { ok: true };
 }
 
+/**
+ * Consolation for rolling a card that's already spoken for. Returns the new
+ * balance so the caller can show it without a second query.
+ */
+export async function awardShards(userId: string, amount: number): Promise<number> {
+  const [row] = await db
+    .update(schema.users)
+    .set({ shards: sql`${schema.users.shards} + ${amount}` })
+    .where(eq(schema.users.id, userId))
+    .returning({ shards: schema.users.shards });
+  return row?.shards ?? 0;
+}
+
+export async function getShards(userId: string): Promise<number> {
+  const [row] = await db
+    .select({ shards: schema.users.shards })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId));
+  return row?.shards ?? 0;
+}
+
 export async function bumpPity(userId: string, guildId: string, reset: boolean) {
   await db
     .update(schema.memberState)

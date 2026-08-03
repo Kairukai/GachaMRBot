@@ -11,6 +11,7 @@ import {
 import { and, eq, desc, sql, count } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { RARITY_META, type Rarity } from "../lib/gacha.js";
+import { getShards } from "../lib/state.js";
 
 const PAGE_SIZE = 10;
 
@@ -73,11 +74,12 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       })
       .join("\n");
 
+    const shards = await getShards(target.id);
     return new EmbedBuilder()
       .setTitle(`${target.username}'s collection`)
       .setDescription(body)
       .setColor(0x5865f2)
-      .setFooter({ text: `Page ${page + 1}/${pages} · ${total} cards` });
+      .setFooter({ text: `Page ${page + 1}/${pages} · ${total} cards · 💠 ${shards} shards` });
   };
 
   const nav = (disabled = false) =>

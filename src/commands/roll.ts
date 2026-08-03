@@ -17,7 +17,13 @@ import {
   DUPLICATE_SHARDS,
   type Rarity,
 } from "../lib/gacha.js";
-import { ensureMember, consumeRoll, consumeClaim, bumpPity } from "../lib/state.js";
+import {
+  ensureMember,
+  consumeRoll,
+  consumeClaim,
+  bumpPity,
+  awardShards,
+} from "../lib/state.js";
 import { availableRarities } from "../lib/pool.js";
 
 export const data = new SlashCommandBuilder()
@@ -112,8 +118,17 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
   if (existing) {
     // Already owned in this server. Showing it anyway is the point — scarcity
-    // only feels real when you can see who beat you to it.
-    embed.addFields({ name: "Owner", value: `<@${existing.userId}>`, inline: true });
+    // only feels real when you can see who beat you to it. Shards are the
+    // consolation so a taken card isn't a wasted roll.
+    const payout = DUPLICATE_SHARDS[card.rarity as Rarity];
+    const balance = await awardShards(userId, payout);
+
+    embed
+      .addFields(
+        { name: "Owner", value: `<@${existing.userId}>`, inline: true },
+        { name: "Shards", value: `+${payout} (you have ${balance})`, inline: true },
+      )
+      .setColor(0x4b5563); // muted — this isn't a win
     return interaction.reply({ embeds: [embed] });
   }
 

@@ -165,6 +165,58 @@ async function resolveImages(files: string[]): Promise<Map<string, string>> {
   return out;
 }
 
+/**
+ * Role values sometimes carry an inline role icon, e.g.
+ * `[[File:Strategist Icon.png|20px]]Strategist`. Strip file links and any
+ * leftover size token so we store "Strategist", not "20pxStrategist".
+ */
+function cleanRole(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/\[\[\s*File:[^\]]*\]\]/gi, "")
+    .replace(/\{\{[^}]*\}\}/g, "")
+    .replace(/\[\[|\]\]/g, "")
+    .split("|")
+    .pop()!
+    .replace(/^\s*\d+px\s*/i, "")
+    // Deadpool is genuinely listed as all three roles; keep them all, readably.
+    .replace(/<br\s*\/?>/gi, " / ")
+    .replace(/\s*\/\s*/g, " / ")
+    .trim();
+  return cleaned || null;
+}
+
+/**
+ * Roles come from each hero page's {{Infobox Character}} `role` field rather
+ * than the Vanguards/Duelists/Strategists categories — those categories
+ * double-list some heroes (Deadpool sits in two), so they can't give one role.
+ */
+async function fetchHeroMeta(
+  names: string[],
+): Promise<Map<string, { role: string | null; icon: string | null }>> {
+  const out = new Map<string, { role: string | null; icon: string | null }>();
+  for (let i = 0; i < names.length; i += 50) {
+    const batch = names.slice(i, i + 50);
+    const j = await mw({
+      action: "query",
+      titles: batch.join("|"),
+      prop: "revisions",
+      rvprop: "content",
+      rvslots: "main",
+    });
+    for (const p of Object.values<any>(j.query?.pages ?? {})) {
+      const text: string | undefined = p.revisions?.[0]?.slots?.main?.["*"];
+      if (!text) continue;
+      const role = text.match(/^\|\s*role\s*=\s*(.+)$/im)?.[1];
+      const icon = text.match(/^\|\s*image\s*=\s*(.+\.png)\s*$/im)?.[1];
+      out.set(p.title, { role: cleanRole(role), icon: icon?.trim() ?? null });
+    }
+    process.stdout.write(`\r  fetched ${out.size}/${names.length} hero pages…`);
+  }
+  process.stdout.write("\n");
+  return out;
+}
+
 async function main() {
   console.log("Listing costume pages…");
   const titles = await listCostumeTitles();
@@ -209,13 +261,34 @@ async function main() {
   if (skipped.noId) console.log(`  skipped ${skipped.noId} without an id`);
   for (const [k, n] of skipped.badRarity) console.log(`  skipped rarity "${k}" ×${n}`);
 
-  console.log("Resolving image URLs…");
-  const images = await resolveImages(parsed.map((p) => p.icon));
-
   const heroMap = new Map<string, string>();
   for (const p of parsed) heroMap.set(slug(p.hero), p.hero);
 
-  const heroRows = [...heroMap].map(([id, name]) => ({ id, name, role: null, imageUrl: null }));
+  console.log("Fetching hero roles…");
+  const heroMeta = await fetchHeroMeta([...heroMap.values()]);
+
+  console.log("Resolving image URLs…");
+  const images = await resolveImages([
+    ...parsed.map((p) => p.icon),
+    ...[...heroMeta.values()].map((m) => m.icon ?? ""),
+  ]);
+
+  const heroRows = [...heroMap].map(([id, name]) => {
+    const meta = heroMeta.get(name);
+    return {
+      id,
+      name,
+      role: meta?.role ?? null,
+      imageUrl: meta?.icon ? (images.get(meta.icon) ?? null) : null,
+    };
+  });
+
+  const missingRole = heroRows.filter((h) => !h.role);
+  if (missingRole.length) {
+    console.log(
+      `  ${missingRole.length} hero(es) without a role: ${missingRole.map((h) => h.name).join(", ")}`,
+    );
+  }
 
   /**
    * Card id is hero-scoped, not the bare costume id: the wiki reuses a single
@@ -257,7 +330,11 @@ async function main() {
   await db.transaction(async (tx) => {
     await tx.insert(schema.heroes).values(heroRows).onConflictDoUpdate({
       target: schema.heroes.id,
-      set: { name: sql`excluded.name` },
+      set: {
+        name: sql`excluded.name`,
+        role: sql`excluded.role`,
+        imageUrl: sql`excluded.image_url`,
+      },
     });
     for (let i = 0; i < cardRows.length; i += 500) {
       await tx.insert(schema.cards).values(cardRows.slice(i, i + 500)).onConflictDoUpdate({

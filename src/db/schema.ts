@@ -62,7 +62,7 @@ export const guildSettings = pgTable("guild_settings", {
   id: text("id").primaryKey(), // discord guild id
   rollCooldownSec: integer("roll_cooldown_sec").notNull().default(8),
   rollsPerHour: integer("rolls_per_hour").notNull().default(20),
-  claimsPerHour: integer("claims_per_hour").notNull().default(1),
+  claimsPerHour: integer("claims_per_hour").notNull().default(2),
   /** How long the Claim button stays live after a drop. */
   claimWindowSec: integer("claim_window_sec").notNull().default(30),
   /** When set, /roll only works in this channel. */
@@ -71,7 +71,7 @@ export const guildSettings = pgTable("guild_settings", {
 
 /**
  * Per-user, per-guild counters. Mudae-style bots scope the economy to a server,
- * so rate limits and pity live here rather than on `users`.
+ * so rate limits live here rather than on `users`.
  */
 export const memberState = pgTable(
   "member_state",
@@ -87,8 +87,6 @@ export const memberState = pgTable(
     claimsUsed: integer("claims_used").notNull().default(0),
     claimsResetAt: timestamp("claims_reset_at", { withTimezone: true }),
     lastRollAt: timestamp("last_roll_at", { withTimezone: true }),
-    /** Rolls since the last legendary-or-better. Drives the soft/hard pity curve. */
-    pity: integer("pity").notNull().default(0),
   },
   (t) => ({ pk: primaryKey({ columns: [t.userId, t.guildId] }) }),
 );

@@ -19,7 +19,7 @@ their server.
 - [npm scripts](#npm-scripts)
 - [Configuration](#configuration)
 - [Card data and ingestion](#card-data-and-ingestion)
-- [Drop rates and pity](#drop-rates-and-pity)
+- [Drop rates](#drop-rates)
 - [Shards and the economy](#shards-and-the-economy)
 - [Database schema](#database-schema)
 - [Project structure](#project-structure)
@@ -43,9 +43,9 @@ If the card is already owned, there's no button. You see who has it, and you get
 **shards** as a consolation prize instead.
 
 The design has one deliberate asymmetry: **rolling is cheap, claiming is
-scarce.** You get 20 rolls an hour but only 1 claim. That's what makes people
+scarce.** You get 20 rolls an hour but only 2 claims. That's what makes people
 watch the channel instead of spamming rolls — you have to decide whether the
-card in front of you is worth your one claim.
+card in front of you is worth one of them.
 
 ---
 
@@ -137,10 +137,13 @@ Console prints `Logged in as YourBot#1234 (1 guilds)`. Run `/roll` in Discord.
 | Command | Who | What it does |
 |---|---|---|
 | `/roll [shards]` | Anyone | Drops a random card with a 30-second Claim button. Set `shards: True` to spend 💠25 and roll past your hourly limit. |
+| `/roll5 [shards]` | Anyone | Rolls 5 cards in one message. Each card is its own panel with its own Claim button attached. Costs 5 rolls (or 💠125). |
+| `/cdcheck` | Anyone | Your roll cooldown, rolls and claims left this hour, and shard balance. Ephemeral. |
+| `/showcase` | Anyone | Posts one of your cards publicly with its art, value and claim date. Autocompletes from your collection. |
 | `/sell` | Anyone | Sell one card for shards. Autocompletes from your inventory and always asks you to confirm. |
 | `/sellall` | Anyone | Sell **every** card of one rarity. Lists what's going before you confirm. |
 | `/collection [user]` | Anyone | Paginated list of cards claimed in this server, 10 per page, sorted by rarity. Omit `user` for your own. Footer shows your shard balance. |
-| `/rates` | Anyone | Current drop odds and your pity counter. Ephemeral — only you see it. |
+| `/rates` | Anyone | Current drop odds, read from the live pool. Ephemeral — only you see it. |
 | `/trade` | Anyone | Offer one of your cards for one of theirs. Both card fields autocomplete from real inventories. Only the recipient can accept; the proposer can withdraw. Offers expire after 5 minutes. |
 | `/flexers` | Anyone | Server leaderboard, ranked by total collection value with a per-rarity breakdown. Paginated 10 at a time; the footer shows your own rank even if you're off-page. |
 | `/commands` | Anyone | Lists every command. Built from the live registry, so it can't fall out of date. Ephemeral. |
@@ -233,7 +236,7 @@ Every server gets a row in `guild_settings`, created on first use:
 |---|---|---|
 | `roll_cooldown_sec` | 8 | Seconds between one user's rolls |
 | `rolls_per_hour` | 20 | Rolls per user per rolling hour |
-| `claims_per_hour` | 1 | **The main dial.** Claims per user per hour. |
+| `claims_per_hour` | 2 | **The main dial.** Claims per user per hour. |
 | `claim_window_sec` | 30 | How long the Claim button stays live |
 | `roll_channel_id` | `null` | If set, `/roll` only works in that channel |
 
@@ -315,7 +318,7 @@ These are handled, and worth knowing before you touch the ingest:
 
 ---
 
-## Drop rates and pity
+## Drop rates
 
 Weights are **renormalised over rarities that actually have cards**. Since the
 pool has no Default or Mythic costumes, those tiers are skipped and the rest
@@ -324,8 +327,8 @@ rescale:
 | Rarity | Base rate | Cards in pool |
 |---|---|---|
 | 🔵 Rare | 72.0% | 132 |
-| 🟣 Epic | 27.5% | 246 |
-| 🟡 Legendary | 0.5% | 120 |
+| 🟣 Epic | 26.0% | 246 |
+| 🟡 Legendary | 2.0% | 120 |
 
 The ladder is Rare / Epic / Legendary only. The wiki has no articles for base
 skins or Mythic costumes, so those tiers would have to be invented rather than
@@ -333,33 +336,23 @@ sourced — both are pinned to weight 0 so they can't start dropping unnoticed i
 such cards ever appear.
 
 Drop rate runs deliberately against pool size: Epic is about half the card pool
-but only 27.5% of drops. Rarity describes how hard a card is to get, not how
+but only 26% of drops. Rarity describes how hard a card is to get, not how
 many exist — so expect Rare cards to repeat often, since 132 cards absorb 72% of
 all rolls.
 
 If Mythic costumes appear in a future ingest, they enter the table
 automatically with no code change.
 
-### Pity
+### No pity system
 
-Legendary weight starts climbing at **50 rolls** without one, and is
-**guaranteed at 90**.
+Every roll is independent. There is no pity counter, no soft ramp, and no
+guarantee — the numbers above are the true odds on every single roll, which is
+what `/rates` reports.
 
-Simulated over 500,000 rolls against the live pool:
-
-```
-rare       71.16%
-epic       27.21%
-legendary   1.63%   (0.5% base, lifted by pity)
-average gap: 60 rolls between legendaries
-worst gap:   90 (the hard cap, reached regularly)
-```
-
-At a 0.5% base rate, pity is doing most of the work — the hard cap at 90 is hit
-routinely rather than rarely, so a legendary is effectively earned by volume
-rather than luck. At the default 20 rolls/hour that's roughly three hours of
-rolling per legendary. Lower `HARD_PITY` in `src/lib/gacha.ts` if that feels
-too grindy for your server.
+That means Legendaries follow a plain geometric distribution: one per 50 rolls
+on average, but with a real tail. Roughly 13% of players will go 100 rolls
+without one, and about 2% will go 200. That's the honest cost of simple,
+explainable odds over a system that quietly owes you a win.
 
 ---
 
@@ -431,7 +424,7 @@ Seven tables, defined in `src/db/schema.ts`.
 | `cards` | 498 costumes — hero, rarity, art URL, `rollable` flag. Base skins are not cards. |
 | `users` | Cross-server per-player data: currency, shards |
 | `guild_settings` | Per-server tuning (see [Configuration](#configuration)) |
-| `member_state` | Per-user-per-server counters: rolls, claims, cooldowns, pity |
+| `member_state` | Per-user-per-server counters: rolls, claims, cooldowns |
 | `claims` | Who owns what, scoped to a server |
 | `trades` | One-for-one swap offers and their status |
 | `wishlist` | Wished-for cards *(table exists, feature not built)* |
@@ -464,8 +457,11 @@ src/
   commands/
     index.ts             Command registry (also drives /commands)
     roll.ts              Card drop, shard-paid rolls, duplicate consolation
+    roll5.ts             Batch of 5 — one message, one button per card
+    cdcheck.ts           Cooldown and quota status
+    showcase.ts          Public single-card display
     collection.ts        Paginated collection view
-    rates.ts             Drop odds and pity counter
+    rates.ts             Drop odds
     trade.ts             /trade — offer builder with inventory autocomplete
     sell.ts              /sell — single card, with confirmation
     sellall.ts           /sellall — bulk by rarity, with confirmation
@@ -475,9 +471,9 @@ src/
     schema.ts            Drizzle table definitions
     index.ts             Database connection
   lib/
-    gacha.ts             Rarity weights, pity curve, shard and sell values
+    gacha.ts             Rarity weights, shard and sell values
     pool.ts              Which rarities have cards (cached) + random card pick
-    state.ts             Quotas, cooldowns, pity, shard balance
+    state.ts             Quotas, cooldowns, shard balance
     claim.ts             Persistent claim-button handler
     trade.ts             Atomic swap + trade button handler
     sell.ts              Sell/bulk-sell execution + confirmation handler
@@ -633,7 +629,6 @@ Built and working:
 - [x] `/roll` with competitive claim races
 - [x] `/collection` with pagination
 - [x] `/rates` with live pool-derived odds
-- [x] Pity system
 - [x] Shard consolation for duplicates
 - [x] Trading — one-for-one swaps with autocomplete and atomic execution
 - [x] Sell economy — `/sell`, `/sellall`, and shards spendable on rolls

@@ -1,0 +1,1 @@
+ALTER TABLE "member_state" DROP COLUMN "pity";

@@ -12,6 +12,11 @@ import { ensureGuild, ensureMember, consumeClaim, refundClaim } from "./state.js
 
 export const CLAIM_PREFIX = "claim:";
 
+/** Fresh mutable copy of the message's component tree. */
+function rawComponents(interaction: ButtonInteraction): any[] {
+  return interaction.message.components.map((c) => c.toJSON()) as any[];
+}
+
 /** Card ids contain a colon (`heroSlug:costumeId`), so only split on the first. */
 export function cardIdFromCustomId(customId: string): string {
   return customId.slice(CLAIM_PREFIX.length);
@@ -33,6 +38,89 @@ function settledRow(label: string) {
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(true),
   );
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/**
+ * Components V2 messages (used by /roll5) nest each card in its own Container
+ * with its own button, so there are no embeds to rewrite and no flat button row
+ * to rebuild. Editing the raw component JSON is version-proof — the nested
+ * builder `.from()` helpers vary between discord.js releases.
+ *
+ * Returns null when nothing matched, so the caller can fall back.
+ */
+export function editV2Components(
+  raw: any[],
+  opts: { customId?: string; claimedBy?: string; disableAll?: boolean; label: string },
+): any[] | null {
+  let touched = false;
+
+  const walk = (container: any) => {
+    if (!Array.isArray(container?.components)) return;
+    for (const child of container.components) {
+      if (child?.type !== 1 || !Array.isArray(child.components)) continue;
+      for (const btn of child.components) {
+        if (btn?.type !== 2) continue;
+        const match = opts.disableAll || btn.custom_id === opts.customId;
+        if (!match || btn.disabled) continue;
+
+        btn.disabled = true;
+        btn.style = 2; // secondary — visually retired
+        btn.label = opts.label;
+        touched = true;
+
+        if (opts.claimedBy) {
+          container.components.push({
+            type: 10,
+            content: `**Claimed by <@${opts.claimedBy}>**`,
+          });
+          container.accent_color = 0x22c55e;
+        }
+      }
+    }
+  };
+
+  for (const top of raw) walk(top);
+  return touched ? raw : null;
+}
+
+/**
+ * A classic embed drop carries one button per embed in matching order. Rebuilds
+ * the row with only the clicked button retired so the others stay claimable,
+ * and reports which slot was taken.
+ */
+function retireButton(interaction: ButtonInteraction, label: string) {
+  const rows = interaction.message.components.map(
+    (r) => ActionRowBuilder.from(r as never) as ActionRowBuilder<ButtonBuilder>,
+  );
+
+  let index = -1;
+  for (const row of rows) {
+    row.components.forEach((c, i) => {
+      const btn = c as ButtonBuilder;
+      if ((btn.data as { custom_id?: string }).custom_id === interaction.customId) {
+        index = i;
+        btn.setDisabled(true).setLabel(label).setStyle(ButtonStyle.Secondary);
+      }
+    });
+  }
+
+  return { rows, index: index === -1 ? 0 : index };
+}
+
+/** Disables every claim button on the message, for expiry. */
+function retireAll(interaction: ButtonInteraction, label: string) {
+  const rows = interaction.message.components.map(
+    (r) => ActionRowBuilder.from(r as never) as ActionRowBuilder<ButtonBuilder>,
+  );
+  for (const row of rows) {
+    for (const c of row.components) {
+      (c as ButtonBuilder).setDisabled(true).setStyle(ButtonStyle.Secondary);
+    }
+  }
+  if (rows.length === 0) return [settledRow(label)];
+  return rows;
 }
 
 function relative(d: Date) {
@@ -63,8 +151,18 @@ export async function handleClaim(interaction: ButtonInteraction) {
   const settings = await ensureGuild(guildId);
   const age = Date.now() - interaction.message.createdTimestamp;
 
+  const isV2 = interaction.message.flags.has(MessageFlags.IsComponentsV2);
+
   if (age > settings.claimWindowSec * 1000) {
-    await interaction.update({ components: [settledRow("Expired")] }).catch(() => {});
+    if (isV2) {
+      const edited = editV2Components(rawComponents(interaction), {
+        disableAll: true,
+        label: "Expired",
+      });
+      if (edited) await interaction.update({ components: edited }).catch(() => {});
+      return;
+    }
+    await interaction.update({ components: retireAll(interaction, "Expired") }).catch(() => {});
     return;
   }
 
@@ -104,14 +202,31 @@ export async function handleClaim(interaction: ButtonInteraction) {
     });
   }
 
-  const base = interaction.message.embeds[0];
-  const embed = base
-    ? EmbedBuilder.from(base).addFields({
-        name: "Claimed by",
-        value: `<@${interaction.user.id}>`,
-        inline: true,
-      })
-    : new EmbedBuilder().setDescription(`Claimed by <@${interaction.user.id}>`);
+  if (isV2) {
+    const edited = editV2Components(rawComponents(interaction), {
+      customId: interaction.customId,
+      claimedBy: interaction.user.id,
+      label: "Claimed",
+    });
+    await interaction.update({ components: edited ?? rawComponents(interaction) });
+    return;
+  }
 
-  await interaction.update({ embeds: [embed], components: [settledRow("Claimed")] });
+  const { rows, index } = retireButton(interaction, "Claimed");
+
+  // Rebuild every embed, marking only the one matching the clicked button.
+  const embeds = interaction.message.embeds.map((e, i) =>
+    i === index
+      ? EmbedBuilder.from(e).addFields({
+          name: "Claimed by",
+          value: `<@${interaction.user.id}>`,
+          inline: true,
+        })
+      : EmbedBuilder.from(e),
+  );
+
+  await interaction.update({
+    embeds: embeds.length ? embeds : [new EmbedBuilder().setDescription(`Claimed by <@${interaction.user.id}>`)],
+    components: rows,
+  });
 }

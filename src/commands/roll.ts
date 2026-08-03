@@ -11,7 +11,6 @@ import { and, eq } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import {
   rollRarity,
-  isHighTier,
   RARITY_META,
   DUPLICATE_SHARDS,
   ROLL_COST_SHARDS,
@@ -20,7 +19,6 @@ import {
 import {
   ensureMember,
   consumeRoll,
-  bumpPity,
   awardShards,
   spendShards,
   getShards,
@@ -47,7 +45,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const guildId = interaction.guildId!;
   const userId = interaction.user.id;
 
-  const state = await ensureMember(userId, guildId);
+  await ensureMember(userId, guildId);
   const [settings] = await db
     .select()
     .from(schema.guildSettings)
@@ -102,15 +100,13 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
-  const card = await randomCard(rollRarity(state.pity, pool));
+  const card = await randomCard(rollRarity(pool));
   if (!card) {
     return interaction.reply({
       content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
       flags: MessageFlags.Ephemeral,
     });
   }
-
-  await bumpPity(userId, guildId, isHighTier(card.rarity as Rarity));
 
   const [existing] = await db
     .select({ userId: schema.claims.userId })

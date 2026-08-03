@@ -51,9 +51,9 @@ can't both win — the loser catches a constraint violation and gets an ephemera
 the race.
 
 **Rarity weights are renormalised over rarities that actually have cards**
-(`src/lib/pool.ts` → `availableRarities()`, 5-min cache). The live pool has no
-Default or Mythic costumes, so hardcoding the full ladder would send ~55% of
-rolls at an empty bucket. If Mythics appear in a later ingest they enter the
+(`src/lib/pool.ts` → `availableRarities()`, 60s cache). The live pool has no
+Default or Mythic costumes, so hardcoding the full ladder would send rolls at an
+empty bucket. If Mythics appear in a later ingest they enter the
 table automatically. `/rates` reports pool-derived odds, so it can't drift from
 what the bot actually does.
 
@@ -69,15 +69,15 @@ base skins or Mythic costumes, so those tiers would be invented rather than
 sourced — both are pinned to weight 0 in `BASE_WEIGHTS`. Don't add synthesised
 Default cards back; this was tried and deliberately reverted.
 
-Weights sum to 100 and read as percentages: Rare 72 / Epic 27.5 / Legendary 0.5.
+Weights sum to 100 and read as percentages: Rare 72 / Epic 26 / Legendary 2.
 Strictly descending — this deliberately runs against supply (Epic is ~half the
-pool but 27.5% of drops), because rarity should describe difficulty of
+pool but 26% of drops), because rarity should describe difficulty of
 acquisition, not inventory size. An earlier version had Epic above Rare to match
-supply; it was rejected as confusing. Legendary at 0.5% means pity does most of
-the work and the hard cap at 90 is reached routinely.
+supply; it was rejected as confusing. Legendary is a flat 2% — roughly one per
+50 rolls, with a real tail (13% of players go 100 rolls without one).
 
 **The shard economy is intentionally loss-making.** A roll's expected sell value
-is ~💠17; a bought roll costs 💠25. Keep `ROLL_COST_SHARDS` above expected sell
+is ~💠19.3; a bought roll costs 💠25. Keep `ROLL_COST_SHARDS` above expected sell
 value or players can farm infinite rolls by cycling their collection. All the
 numbers live in `src/lib/gacha.ts` (`SELL_VALUE`, `DUPLICATE_SHARDS`,
 `ROLL_COST_SHARDS`).
@@ -87,8 +87,32 @@ taken when the confirmation prompt was built — otherwise a trade completing in
 between pays for cards the user no longer owns. Same reasoning as the trade
 swap. Selling deletes the claim, so the card returns to the pool.
 
+**Quota SQL uses `clock_timestamp()`, not `now()`.** `now()` is the transaction
+start time, so a statement that waited on another's row lock compares against
+its own stale timestamp and can reject a legitimate roll as "on cooldown". This
+showed up as a flaky test before it ever showed up in production.
+
+**`/roll5` uses Components V2**, so each card is its own `Container` with its
+own Claim button nested inside it. Classic embeds can't do that — buttons may
+only appear in action rows *after* every embed, which is why the first version
+had all five buttons stranded at the bottom.
+
+V2 messages carry no `content` and no `embeds`; everything is components, and
+the message needs `flags: MessageFlags.IsComponentsV2`. `lib/claim.ts` branches
+on that flag: V2 messages are edited via `editV2Components`, which walks the raw
+component JSON rather than using nested builder `.from()` helpers, whose support
+varies across discord.js releases. `/roll` (single) still uses a classic embed
+so it keeps the large image.
+
+**There is no pity system.** Every roll is independent; `rollRarity(pool)` takes
+no counter and the `pity` column was dropped. Don't reintroduce one without
+saying so — `/rates` advertises these as the true per-roll odds.
+
+`consumeRoll(..., count)` is all-or-nothing — a partial batch is refused rather
+than clipped.
+
 **Rolls are cheap, claims are scarce.** Rolls are rate-limited per hour
-(default 20); claims default to 1/hour. That split is the engagement mechanic —
+(default 20); claims default to 2/hour. That split is the engagement mechanic —
 tune claims, not rolls, to change how competitive a server feels.
 
 ## Data source gotchas
@@ -126,8 +150,9 @@ things (currency, shards).
 ## Current state
 
 Live and working: `/roll` (with claim race), `/collection`, `/rates`,
-`/commands`, `/trade`, `/sell`, `/sellall`, `/flexers`, shard consolation for
-rolling an owned card, and shards spendable via `/roll shards:True`.
+`/roll5`, `/cdcheck`, `/showcase`, `/commands`, `/trade`, `/sell`, `/sellall`, `/flexers`,
+shard consolation for rolling an owned card, and shards spendable via
+`/roll shards:True`.
 
 `/flexers` derives collection value from `SELL_VALUE` in SQL (`lib/leaderboard.ts`)
 so the leaderboard can't disagree with sell payouts. Aggregate columns come back

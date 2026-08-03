@@ -9,15 +9,20 @@ export type Rarity = "default" | "rare" | "epic" | "legendary" | "mythic";
  * they don't silently start dropping.
  *
  * Strictly descending: each tier is rarer than the one below it. Note this runs
- * against supply — Epic is about half the card pool but only 27.5% of drops —
+ * against supply — Epic is about half the card pool but only 26% of drops —
  * which is intentional. Rarity should describe how hard a card is to get, not
  * how many of them exist.
+ *
+ * There is no pity system: every roll is independent and these are the true
+ * odds. A flat 2% Legendary averages one per 50 rolls, but has a long tail —
+ * roughly 13% of players will go 100 rolls without one. That's the tradeoff for
+ * honest, explainable odds.
  */
 const BASE_WEIGHTS: Record<Rarity, number> = {
   default: 0,
   rare: 72,
-  epic: 27.5,
-  legendary: 0.5,
+  epic: 26,
+  legendary: 2,
   mythic: 0,
 };
 
@@ -54,75 +59,38 @@ export const SELL_VALUE: Record<Rarity, number> = {
  * Cost of buying an extra roll with shards.
  *
  * Priced so selling is a real option but never a shortcut. A roll's expected
- * sell value is ~17 shards (0.72×10 + 0.275×35 + 0.005×150), so paying 25 to
+ * sell value is ~19.3 shards (0.72×10 + 0.26×35 + 0.02×150), so paying 25 to
  * roll is a deliberate loss — the shard economy drains rather than compounds,
  * and nobody can farm infinite rolls by dumping their collection.
  *
- * In practice a legendary is worth 6 bought rolls but takes ~60 rolls to earn,
- * so selling one is a bad trade. That asymmetry is the point.
+ * Keep this above expected sell value. Raising the Legendary rate raises that
+ * expectation, so the two numbers have to move together.
  */
 export const ROLL_COST_SHARDS = 25;
 
-const SOFT_PITY_START = 50;
-const HARD_PITY = 90;
-
-/**
- * Weight multiplier applied to legendary/mythic as pity climbs. Flat until
- * SOFT_PITY_START, then ramps hard — the shape players read as "I'm due".
- */
-function pityMultiplier(pity: number): number {
-  if (pity < SOFT_PITY_START) return 1;
-  return 1 + (pity - SOFT_PITY_START) * 0.6;
-}
-
-export function isHighTier(r: Rarity): boolean {
-  return r === "legendary" || r === "mythic";
-}
-
-/**
- * Picks a rarity given the user's current pity counter.
- * At HARD_PITY a high tier is guaranteed.
- */
 /**
  * Weights restricted to rarities that actually have cards, then renormalised.
- * The live pool is sourced from a wiki and currently has no Default or Mythic
- * costumes at all — hardcoding the full ladder would send ~55% of rolls at an
- * empty bucket. Passing the available set keeps the odds honest as the pool
- * changes underneath us.
+ * The live pool is sourced from a wiki and has no Default or Mythic costumes at
+ * all — hardcoding the full ladder would send rolls at an empty bucket. Passing
+ * the available set keeps the odds honest as the pool changes underneath us.
  */
-function weightsFor(pity: number, available?: readonly Rarity[]): (readonly [Rarity, number])[] {
-  const mult = pityMultiplier(pity);
+function weightsFor(available?: readonly Rarity[]): (readonly [Rarity, number])[] {
   const allowed = available?.length ? new Set(available) : null;
   const weights = (Object.keys(BASE_WEIGHTS) as Rarity[])
-    .filter((r) => !allowed || allowed.has(r))
-    .map((r) => [r, isHighTier(r) ? BASE_WEIGHTS[r] * mult : BASE_WEIGHTS[r]] as const);
+    .filter((r) => (!allowed || allowed.has(r)) && BASE_WEIGHTS[r] > 0)
+    .map((r) => [r, BASE_WEIGHTS[r]] as const);
 
-  // Every configured rarity missing from the pool — caller has bigger problems,
-  // but don't divide by zero.
+  // Every configured rarity missing from the pool — the caller has bigger
+  // problems, but don't divide by zero.
   return weights.length ? weights : [["default", 1] as const];
 }
 
+/** Picks a rarity. Every roll is independent — there is no pity. */
 export function rollRarity(
-  pity: number,
   available?: readonly Rarity[],
   rng: () => number = Math.random,
 ): Rarity {
-  const weights = weightsFor(pity, available);
-
-  if (pity >= HARD_PITY) {
-    const high = weights.filter(([r]) => isHighTier(r));
-    if (high.length) {
-      const total = high.reduce((s, [, w]) => s + w, 0);
-      let roll = rng() * total;
-      for (const [r, w] of high) {
-        roll -= w;
-        if (roll <= 0) return r;
-      }
-      return high[high.length - 1]![0];
-    }
-    // No high tier in the pool — fall through to the normal draw.
-  }
-
+  const weights = weightsFor(available);
   const total = weights.reduce((sum, [, w]) => sum + w, 0);
   let roll = rng() * total;
   for (const [rar, w] of weights) {
@@ -132,16 +100,11 @@ export function rollRarity(
   return weights[weights.length - 1]![0];
 }
 
-/** Human-readable odds for a `/rates` command, so the economy stays honest. */
-export function ratesAt(
-  pity: number,
-  available?: readonly Rarity[],
-): Partial<Record<Rarity, string>> {
-  const weights = weightsFor(pity, available);
+/** Human-readable odds for `/rates`, so the advertised numbers can't drift. */
+export function rates(available?: readonly Rarity[]): Partial<Record<Rarity, string>> {
+  const weights = weightsFor(available);
   const total = weights.reduce((sum, [, w]) => sum + w, 0);
   return Object.fromEntries(
     weights.map(([r, w]) => [r, `${((w / total) * 100).toFixed(2)}%`]),
   ) as Partial<Record<Rarity, string>>;
 }
-
-export { SOFT_PITY_START, HARD_PITY };

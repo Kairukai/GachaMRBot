@@ -52,6 +52,12 @@ export type QuotaResult =
  * both pass. The WHERE clause makes the check and the increment atomic — if it
  * matches no row, the caller was over quota or on cooldown, and we only then
  * pay for a second query to find out which.
+ *
+ * These statements use clock_timestamp(), not now(). now() is the *transaction
+ * start* time, so a statement that waited on another's row lock still compares
+ * against its own older timestamp and can read a just-committed last_roll_at as
+ * being in the future — rejecting a legitimate roll as "on cooldown".
+ * clock_timestamp() is real wall-clock time, which is what a cooldown means.
  */
 async function explainRollBlock(
   userId: string,
@@ -74,34 +80,40 @@ async function explainRollBlock(
   };
 }
 
+/**
+ * Consumes `count` rolls, all or nothing. A batch that only partly fits the
+ * remaining quota is rejected rather than clipped — half a `/roll5` would be
+ * worse than a clear "not enough rolls".
+ */
 export async function consumeRoll(
   userId: string,
   guildId: string,
   cooldownSec: number,
   rollsPerHour: number,
+  count = 1,
 ): Promise<QuotaResult> {
   await ensureMember(userId, guildId);
 
   const rows = await db.execute(sql`
     UPDATE member_state SET
       rolls_used = CASE
-        WHEN rolls_reset_at IS NULL OR rolls_reset_at <= now() THEN 1
-        ELSE rolls_used + 1 END,
+        WHEN rolls_reset_at IS NULL OR rolls_reset_at <= clock_timestamp() THEN ${count}::int
+        ELSE rolls_used + ${count}::int END,
       rolls_reset_at = CASE
-        WHEN rolls_reset_at IS NULL OR rolls_reset_at <= now()
-          THEN now() + interval '1 hour'
+        WHEN rolls_reset_at IS NULL OR rolls_reset_at <= clock_timestamp()
+          THEN clock_timestamp() + interval '1 hour'
         ELSE rolls_reset_at END,
-      last_roll_at = now()
+      last_roll_at = clock_timestamp()
     WHERE user_id = ${userId}
       AND guild_id = ${guildId}
       AND (
         last_roll_at IS NULL
-        OR last_roll_at + (${cooldownSec}::int * interval '1 second') <= now()
+        OR last_roll_at + (${cooldownSec}::int * interval '1 second') <= clock_timestamp()
       )
       AND (
         rolls_reset_at IS NULL
-        OR rolls_reset_at <= now()
-        OR rolls_used < ${rollsPerHour}::int
+        OR rolls_reset_at <= clock_timestamp()
+        OR rolls_used + ${count}::int <= ${rollsPerHour}::int
       )
     RETURNING rolls_used
   `);
@@ -121,17 +133,17 @@ export async function consumeClaim(
   const rows = await db.execute(sql`
     UPDATE member_state SET
       claims_used = CASE
-        WHEN claims_reset_at IS NULL OR claims_reset_at <= now() THEN 1
+        WHEN claims_reset_at IS NULL OR claims_reset_at <= clock_timestamp() THEN 1
         ELSE claims_used + 1 END,
       claims_reset_at = CASE
-        WHEN claims_reset_at IS NULL OR claims_reset_at <= now()
-          THEN now() + interval '1 hour'
+        WHEN claims_reset_at IS NULL OR claims_reset_at <= clock_timestamp()
+          THEN clock_timestamp() + interval '1 hour'
         ELSE claims_reset_at END
     WHERE user_id = ${userId}
       AND guild_id = ${guildId}
       AND (
         claims_reset_at IS NULL
-        OR claims_reset_at <= now()
+        OR claims_reset_at <= clock_timestamp()
         OR claims_used < ${claimsPerHour}::int
       )
     RETURNING claims_used
@@ -195,14 +207,3 @@ export async function getShards(userId: string): Promise<number> {
   return row?.shards ?? 0;
 }
 
-export async function bumpPity(userId: string, guildId: string, reset: boolean) {
-  await db
-    .update(schema.memberState)
-    .set({ pity: reset ? 0 : sql`${schema.memberState.pity} + 1` })
-    .where(
-      and(
-        eq(schema.memberState.userId, userId),
-        eq(schema.memberState.guildId, guildId),
-      ),
-    );
-}

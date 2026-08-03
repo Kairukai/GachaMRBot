@@ -14,12 +14,22 @@ import {
   consumeClaim,
   refundClaim,
 } from "../src/lib/state.js";
-import { rollRarity, isHighTier, HARD_PITY, type Rarity } from "../src/lib/gacha.js";
+import { rollRarity, rates, type Rarity } from "../src/lib/gacha.js";
 import { executeSwap } from "../src/lib/trade.js";
 import { sellOne, sellAll } from "../src/lib/sell.js";
 import { SELL_VALUE } from "../src/lib/gacha.js";
 import { getShards, spendShards } from "../src/lib/state.js";
 import { collectorCount, leaderboardPage, memberRank } from "../src/lib/leaderboard.js";
+import { editV2Components } from "../src/lib/claim.js";
+import {
+  ContainerBuilder,
+  SectionBuilder,
+  TextDisplayBuilder,
+  ThumbnailBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} from "discord.js";
 
 const G = "test-guild-concurrency";
 const U = "test-user-1";
@@ -382,23 +392,142 @@ test("leaderboard ranks by collection value with correct breakdowns", async () =
   assert.equal(await memberRank(G, "test-user-nobody"), null);
 });
 
-test("pity never exceeds the hard cap", () => {
-  const pool: Rarity[] = ["rare", "epic", "legendary"];
-  let pity = 0;
-  let worst = 0;
-  for (let i = 0; i < 200_000; i++) {
-    const r = rollRarity(pity, pool);
-    if (isHighTier(r)) {
-      worst = Math.max(worst, pity);
-      pity = 0;
-    } else pity++;
+test("a batch roll consumes all 5 or none", async () => {
+  await ready;
+  const u = "test-user-b1";
+  await ensureMember(u, G);
+
+  // Limit 12: two batches of 5 fit, the third must be refused outright.
+  assert.equal((await consumeRoll(u, G, 0, 12, 5)).ok, true);
+  assert.equal((await consumeRoll(u, G, 0, 12, 5)).ok, true);
+  const third = await consumeRoll(u, G, 0, 12, 5);
+  assert.equal(third.ok, false, "a partial batch must be refused, not clipped");
+
+  const [st] = await db
+    .select()
+    .from(schema.memberState)
+    .where(and(eq(schema.memberState.userId, u), eq(schema.memberState.guildId, G)));
+  assert.equal(st!.rollsUsed, 10, "refused batch must not consume anything");
+
+  // Single rolls still fit in the remaining 2.
+  assert.equal((await consumeRoll(u, G, 0, 12, 1)).ok, true);
+  assert.equal((await consumeRoll(u, G, 0, 12, 1)).ok, true);
+  assert.equal((await consumeRoll(u, G, 0, 12, 1)).ok, false);
+});
+
+test("concurrent batch rolls cannot overdraw the quota", async () => {
+  await ready;
+  const u = "test-user-b2";
+  await ensureMember(u, G);
+
+  // 10 concurrent batches of 5 against a limit of 20 — only 4 may land.
+  const results = await Promise.all(
+    Array.from({ length: 10 }, () => consumeRoll(u, G, 0, 20, 5)),
+  );
+  assert.equal(results.filter((r) => r.ok).length, 4);
+
+  const [st] = await db
+    .select()
+    .from(schema.memberState)
+    .where(and(eq(schema.memberState.userId, u), eq(schema.memberState.guildId, G)));
+  assert.equal(st!.rollsUsed, 20, "must never exceed the limit");
+});
+
+test("a claim retires only its own card's button in a V2 batch", () => {
+  // Mirrors what /roll5 builds: one Container per card, each with its own row.
+  const build = (n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      new ContainerBuilder()
+        .setAccentColor(0x3b82f6)
+        .addSectionComponents(
+          new SectionBuilder()
+            .addTextDisplayComponents(new TextDisplayBuilder().setContent(`### card ${i}`))
+            .setThumbnailAccessory(new ThumbnailBuilder().setURL("https://example.com/a.png")),
+        )
+        .addActionRowComponents(
+          new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`claim:card-${i}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Success),
+          ),
+        )
+        .toJSON(),
+    );
+
+  const raw = build(5) as any[];
+  const edited = editV2Components(raw, {
+    customId: "claim:card-2",
+    claimedBy: "user-9",
+    label: "Claimed",
+  });
+  assert.ok(edited, "edit should match a button");
+
+  const buttonsOf = (c: any) =>
+    c.components.filter((x: any) => x.type === 1).flatMap((r: any) => r.components);
+
+  edited!.forEach((container: any, i: number) => {
+    const [btn] = buttonsOf(container);
+    if (i === 2) {
+      assert.equal(btn.disabled, true, "clicked button must be retired");
+      assert.equal(btn.label, "Claimed");
+      const texts = container.components.filter((x: any) => x.type === 10);
+      assert.ok(
+        texts.some((t: any) => t.content.includes("user-9")),
+        "claimed card should name its owner",
+      );
+    } else {
+      assert.notEqual(btn.disabled, true, `card ${i} must stay claimable`);
+      const texts = container.components.filter((x: any) => x.type === 10);
+      assert.ok(
+        !texts.some((t: any) => t.content.includes("user-9")),
+        `card ${i} must not be marked claimed`,
+      );
+    }
+  });
+
+  // Expiry retires everything that's still live.
+  const expired = editV2Components(edited as any[], { disableAll: true, label: "Expired" });
+  assert.ok(expired);
+  for (const c of expired as any[]) {
+    for (const b of buttonsOf(c)) assert.equal(b.disabled, true);
   }
-  assert.ok(worst <= HARD_PITY, `worst streak ${worst} exceeded hard pity ${HARD_PITY}`);
+
+  // Nothing left to retire — a second expiry pass must report no change.
+  assert.equal(
+    editV2Components(expired as any[], { disableAll: true, label: "Expired" }),
+    null,
+  );
 });
 
 test("rollRarity only returns rarities that are actually available", () => {
   const pool: Rarity[] = ["rare", "legendary"];
   const seen = new Set<Rarity>();
-  for (let i = 0; i < 20_000; i++) seen.add(rollRarity(i % 120, pool));
+  for (let i = 0; i < 20_000; i++) seen.add(rollRarity(pool));
   for (const r of seen) assert.ok(pool.includes(r), `rolled unavailable rarity ${r}`);
+});
+
+test("drop rates match the configured weights and sum to 100%", async () => {
+  const pool: Rarity[] = ["rare", "epic", "legendary"];
+  const table = rates(pool);
+
+  assert.equal(table.rare, "72.00%");
+  assert.equal(table.epic, "26.00%");
+  assert.equal(table.legendary, "2.00%");
+
+  const total = Object.values(table).reduce((s, v) => s + parseFloat(v!), 0);
+  assert.ok(Math.abs(total - 100) < 0.01, `rates should sum to 100, got ${total}`);
+});
+
+test("rolls are independent — no pity, and the observed rate matches the advertised one", () => {
+  const pool: Rarity[] = ["rare", "epic", "legendary"];
+  const N = 400_000;
+  let legendary = 0;
+  for (let i = 0; i < N; i++) if (rollRarity(pool) === "legendary") legendary++;
+
+  const observed = (legendary / N) * 100;
+  assert.ok(
+    Math.abs(observed - 2) < 0.15,
+    `expected ~2% legendary with no pity, observed ${observed.toFixed(3)}%`,
+  );
 });

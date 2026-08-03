@@ -13,8 +13,11 @@ export const data = new SlashCommandBuilder()
 /** Extra context per command, keyed by name. Anything unlisted still shows. */
 const NOTES: Record<string, string> = {
   roll: "First person to hit **Claim** keeps the card. One owner per server.",
+  roll5: "Costs 5 rolls. Each card gets its own Claim button — grab any that are free.",
   collection: "Pass a user to view someone else's. Shows your shard balance.",
-  rates: "Odds are read from the live card pool, so they're always accurate.",
+  cdcheck: "Your roll cooldown, rolls and claims left this hour, and shard balance.",
+  showcase: "Posts one of your cards publicly, with its value and claim date.",
+  rates: "True odds on every roll — no pity, read from the live card pool.",
   trade: "One-for-one swap. Only the recipient can accept; offers expire in 5 minutes.",
   sell: "Rare 💠10 · Epic 💠35 · Legendary 💠150. Always asks you to confirm first.",
   sellall: "Sells **every** card of one rarity. Shows the full list before you confirm.",

@@ -1,0 +1,33 @@
+{
+  "name": "gacha-mr-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/bot.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "deploy-commands": "tsx src/deploy-commands.ts",
+    "ingest": "tsx scripts/ingest-wiki.ts",
+    "ingest:api": "tsx scripts/ingest.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

@@ -81,8 +81,21 @@ server, which is exactly how it once looked broken in every other guild.
 ever invited alongside the live one, `guild_id` collides and test rolls would
 create real claims, locking cards away from real players.
 
-Never run the live bot in Docker and `npm run live:dev` at the same time: two
-gateway sessions on one token means every interaction is handled twice.
+**Production runs on Render, so the local `prod` compose profile is now a
+footgun — don't start it.** The `bot` service takes `DISCORD_TOKEN` from `.env`
+(the LIVE token) but `DATABASE_URL` points at the local Postgres, not Neon.
+Starting it gives two bots on one token — every interaction handled twice — and
+splits writes across two databases that never reconcile. Same applies to
+`npm run live:dev`.
+
+Safe locally: `docker compose up -d` (Postgres only), `npm run dev` (separate
+dev bot and `gacha_dev` database), `npm test`. The local `gacha` database is a
+frozen snapshot from the migration to Neon; nothing syncs it back.
+
+The `gachamrbot-bot-1` container was deliberately removed from the dev machine.
+The compose service still exists — `--profile prod` recreates it — and README's
+"Migrating off Render" section documents the full switch-over, including that
+any database dump must be taken with the bot **stopped**.
 
 ## Core design decisions
 

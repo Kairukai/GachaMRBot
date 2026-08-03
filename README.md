@@ -696,6 +696,12 @@ room for a second free service.
 
 ### Docker (local and VPS)
 
+> **Don't start this while Render is serving production.** The `bot` service
+> uses the live `DISCORD_TOKEN` from `.env` but the *local* Postgres — so you'd
+> get two bots on one token answering every command twice, writing to two
+> databases that never reconcile. Use `npm run dev` (separate bot and database)
+> for local work, or stop the Render service first.
+
 ```bash
 docker compose --profile prod up -d --build
 ```
@@ -710,6 +716,80 @@ local development is unaffected — the bot sits behind a `prod` profile.
 - `restart: unless-stopped`, verified: killing the process inside the container
   brings it back. Note `docker compose kill` counts as a *manual* stop and
   deliberately does not restart.
+
+### Migrating off Render (self-hosting)
+
+Render is production today. The bot is stateless — everything lives in Postgres
+— so moving it is mostly a matter of *not* running two copies at once.
+
+The `bot` compose service exists for exactly this. Its container is deleted on
+the current machine (to remove the temptation to start it), but the service
+definition and image build remain; `--profile prod` recreates it.
+
+**The one rule: never two bots on one token.** Discord delivers every
+interaction to both, so users see doubled replies — and if they point at
+different databases, the data forks with no way to merge it back.
+
+#### Moving to a VPS or your own machine
+
+1. **Keep the database where it is.** Neon works from anywhere; leaving it
+   alone means zero data migration and no downtime window. Only move it if you
+   want to (see below).
+2. Copy `.env` to the new host with the live values:
+   ```
+   DISCORD_TOKEN=<live token>
+   DISCORD_CLIENT_ID=<app id>
+   DEV_GUILD_ID=            # must stay blank
+   DATABASE_URL=postgresql://...neon.tech/neondb?sslmode=require
+   DB_SSL=true
+   DB_POOL_MAX=5
+   ```
+3. **Suspend or delete the Render service first.** This is the step that
+   matters — do it before starting anything else.
+4. Start it:
+   ```bash
+   docker compose --profile prod up -d --build
+   ```
+   Migrations run on boot. Watch `docker compose logs -f bot` for
+   `Logged in as ...`.
+5. Delete the UptimeRobot monitor, or repoint it — a self-hosted bot doesn't
+   sleep, so the keepalive is no longer needed. Keeping it as a *health* check
+   is still useful if you expose the port.
+
+#### Also moving the database off Neon
+
+Only if you want everything local. With the bot stopped:
+
+```bash
+# dump from Neon (player data only — cards/heroes are re-ingestable)
+docker compose exec -T db pg_dump "postgresql://...neon.tech/neondb?sslmode=require"   --data-only --no-owner --no-privileges   -t users -t guild_settings -t member_state -t claims -t trades -t wishlist > sync.sql
+
+# prepare the target
+docker compose up -d
+npm run db:migrate
+npm run ingest          # loads the 498 cards
+
+# restore
+docker compose exec -T db psql -U gacha -d gacha -v ON_ERROR_STOP=1 < sync.sql
+```
+
+Then point `DATABASE_URL` at the local database and start the bot.
+
+**Dump while the bot is stopped.** A dump taken from a live bot misses
+everything written afterwards — that happened during the original move to Neon,
+and 21 claims plus 150 shards had to be re-synced. Verify counts on both sides
+before switching over, and check for orphaned rows:
+
+```sql
+SELECT count(*) FROM claims cl LEFT JOIN cards c ON c.id = cl.card_id
+WHERE c.id IS NULL;   -- must be 0
+```
+
+#### Coming back to Render
+
+Reverse it: `docker compose --profile prod stop bot`, point Render's
+`DATABASE_URL` at whichever database is current, resume the service, and
+re-enable the pinger.
 
 ### Entrypoints
 

@@ -8,13 +8,15 @@ export type Rarity = "default" | "rare" | "epic" | "legendary" | "mythic";
  * rather than sourced. Both are pinned to 0 so that if such cards ever appear
  * they don't silently start dropping.
  *
- * Epic sits above Rare here, which inverts the usual ladder but matches supply:
- * Epic is roughly half the pool (246 of 498), Rare about a quarter.
+ * Strictly descending: each tier is rarer than the one below it. Note this runs
+ * against supply — Epic is about half the card pool but only 27.5% of drops —
+ * which is intentional. Rarity should describe how hard a card is to get, not
+ * how many of them exist.
  */
 const BASE_WEIGHTS: Record<Rarity, number> = {
   default: 0,
-  rare: 47,
-  epic: 52.5,
+  rare: 72,
+  epic: 27.5,
   legendary: 0.5,
   mythic: 0,
 };
@@ -27,7 +29,7 @@ export const RARITY_META: Record<Rarity, { label: string; color: number; emoji: 
   mythic: { label: "Mythic", color: 0xef4444, emoji: "🔴" },
 };
 
-/** Shards awarded when you claim a card someone in the server already owns. */
+/** Shards awarded when you roll a card someone in the server already owns. */
 export const DUPLICATE_SHARDS: Record<Rarity, number> = {
   default: 1,
   rare: 3,
@@ -35,6 +37,31 @@ export const DUPLICATE_SHARDS: Record<Rarity, number> = {
   legendary: 40,
   mythic: 150,
 };
+
+/**
+ * Shards paid out for selling a card you own. Higher than the duplicate
+ * consolation because you're giving the card up, not just seeing it.
+ */
+export const SELL_VALUE: Record<Rarity, number> = {
+  default: 2,
+  rare: 10,
+  epic: 35,
+  legendary: 150,
+  mythic: 500,
+};
+
+/**
+ * Cost of buying an extra roll with shards.
+ *
+ * Priced so selling is a real option but never a shortcut. A roll's expected
+ * sell value is ~17 shards (0.72×10 + 0.275×35 + 0.005×150), so paying 25 to
+ * roll is a deliberate loss — the shard economy drains rather than compounds,
+ * and nobody can farm infinite rolls by dumping their collection.
+ *
+ * In practice a legendary is worth 6 bought rolls but takes ~60 rolls to earn,
+ * so selling one is a bad trade. That asymmetry is the point.
+ */
+export const ROLL_COST_SHARDS = 25;
 
 const SOFT_PITY_START = 50;
 const HARD_PITY = 90;

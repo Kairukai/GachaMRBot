@@ -136,7 +136,9 @@ Console prints `Logged in as YourBot#1234 (1 guilds)`. Run `/roll` in Discord.
 
 | Command | Who | What it does |
 |---|---|---|
-| `/roll` | Anyone | Drops a random card with a 30-second Claim button |
+| `/roll [shards]` | Anyone | Drops a random card with a 30-second Claim button. Set `shards: True` to spend 💠25 and roll past your hourly limit. |
+| `/sell` | Anyone | Sell one card for shards. Autocompletes from your inventory and always asks you to confirm. |
+| `/sellall` | Anyone | Sell **every** card of one rarity. Lists what's going before you confirm. |
 | `/collection [user]` | Anyone | Paginated list of cards claimed in this server, 10 per page, sorted by rarity. Omit `user` for your own. Footer shows your shard balance. |
 | `/rates` | Anyone | Current drop odds and your pity counter. Ephemeral — only you see it. |
 | `/trade` | Anyone | Offer one of your cards for one of theirs. Both card fields autocomplete from real inventories. Only the recipient can accept; the proposer can withdraw. Offers expire after 5 minutes. |
@@ -309,8 +311,8 @@ rescale:
 
 | Rarity | Base rate | Cards in pool |
 |---|---|---|
-| 🔵 Rare | 47.0% | 132 |
-| 🟣 Epic | 52.5% | 246 |
+| 🔵 Rare | 72.0% | 132 |
+| 🟣 Epic | 27.5% | 246 |
 | 🟡 Legendary | 0.5% | 120 |
 
 The ladder is Rare / Epic / Legendary only. The wiki has no articles for base
@@ -318,8 +320,10 @@ skins or Mythic costumes, so those tiers would have to be invented rather than
 sourced — both are pinned to weight 0 so they can't start dropping unnoticed if
 such cards ever appear.
 
-Epic sits above Rare, inverting the usual ladder, because it matches supply:
-Epic is roughly half the pool, Rare about a quarter.
+Drop rate runs deliberately against pool size: Epic is about half the card pool
+but only 27.5% of drops. Rarity describes how hard a card is to get, not how
+many exist — so expect Rare cards to repeat often, since 132 cards absorb 72% of
+all rolls.
 
 If Mythic costumes appear in a future ingest, they enter the table
 automatically with no code change.
@@ -332,8 +336,8 @@ Legendary weight starts climbing at **50 rolls** without one, and is
 Simulated over 500,000 rolls against the live pool:
 
 ```
-rare       46.33%
-epic       52.04%
+rare       71.16%
+epic       27.21%
 legendary   1.63%   (0.5% base, lifted by pity)
 average gap: 60 rolls between legendaries
 worst gap:   90 (the hard cap, reached regularly)
@@ -347,26 +351,54 @@ too grindy for your server.
 
 ---
 
-## Shards
+## Shards — the economy
 
-Rolling a card someone already owns pays out shards instead of nothing:
+Shards are the currency. You earn them two ways and spend them on rolls.
 
-| Rarity | Shards |
-|---|---|
-| 🔵 Rare | 3 |
-| 🟣 Epic | 10 |
-| 🟡 Legendary | 40 |
-| 🔴 Mythic | 150 |
+### Earning
 
-Your balance shows in the drop embed and in `/collection`'s footer.
+| Rarity | Rolled a card someone owns | Sold a card you own |
+|---|---|---|
+| 🔵 Rare | 💠 3 | 💠 10 |
+| 🟣 Epic | 💠 10 | 💠 35 |
+| 🟡 Legendary | 💠 40 | 💠 150 |
 
-> **Shards currently have no sink.** They accumulate and display, but nothing
-> spends them yet. The intended use is a targeted pull — spend shards to roll a
-> specific hero. Until that's built they're a score, not a currency.
+Selling pays more than the duplicate consolation because you're giving the card
+up, not just seeing it.
 
-Shard payouts are rare early on: with only a handful of cards claimed, the odds
-of rolling an owned one are under 1%. It becomes a real mechanic as a server's
-collection fills out.
+### Spending
+
+`/roll shards:True` costs **💠 25** and ignores your hourly roll limit. The
+cooldown still applies, so a big balance can't be turned into channel spam.
+
+### Why these numbers
+
+A roll's expected sell value is about **💠 17** (`0.72×10 + 0.275×35 +
+0.005×150`), while a roll costs 💠 25. **The economy is deliberately
+loss-making** — you cannot dump your collection to farm infinite rolls, and
+shards drain rather than compound.
+
+The asymmetry is sharpest at the top: a Legendary sells for 💠 150, which buys 6
+rolls, but takes roughly 60 rolls to earn. Selling one is a bad trade, and
+`/sellall legendary` says so explicitly before you confirm.
+
+Rares are the intended fuel. They're 72% of drops against a 132-card pool, so
+they repeat constantly once your collection fills out — `/sellall rare` is the
+natural way to convert clutter into rolls.
+
+### Selling returns cards to the pool
+
+A sold card becomes unowned, so anyone in the server can claim it again. Selling
+isn't destruction; it's putting a card back on the market.
+
+### Confirmation
+
+Both `/sell` and `/sellall` are two-step. The prompt is ephemeral and names the
+card — or lists up to 20 of them for bulk sales — with the payout, your
+resulting balance, and how many rolls that buys. Nothing is sold until you press
+the button, and the payout is calculated from the rows actually deleted, so a
+card traded away between prompt and confirm pays nothing rather than crediting
+something you no longer own.
 
 ---
 
@@ -512,11 +544,12 @@ Built and working:
 - [x] Pity system
 - [x] Shard consolation for duplicates
 - [x] Trading — one-for-one swaps with autocomplete and atomic execution
+- [x] Sell economy — `/sell`, `/sellall`, and shards spendable on rolls
 
 Not built yet:
 
-- [ ] **Shard sink** — spend shards on a targeted pull. Closes the loop; shards are currently unspendable.
 - [ ] **Admin config commands** — `guild_settings` is tunable only via raw SQL, which doesn't scale past your own server.
+- [ ] **Targeted pull** — spend a larger shard sum to roll a chosen hero.
 - [ ] **Multi-card trades** — the current flow is strictly one card for one card.
 - [ ] **Wishlist DM pings** — table exists, unused. Strongest retention feature; needs care around DM rate limits and users with DMs closed.
 - [ ] **Currency and shop** — a second sink alongside shards.

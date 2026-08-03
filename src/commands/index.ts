@@ -9,6 +9,8 @@ import * as collection from "./collection.js";
 import * as rates from "./rates.js";
 import * as help from "./help.js";
 import * as trade from "./trade.js";
+import * as sell from "./sell.js";
+import * as sellall from "./sellall.js";
 
 export interface Command {
   data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder;
@@ -18,8 +20,7 @@ export interface Command {
 }
 
 export const commands = new Map<string, Command>(
-  ([roll, collection, rates, help, trade] as unknown as Command[]).map((c) => [
-    c.data.name,
-    c,
-  ]),
+  ([roll, collection, rates, help, trade, sell, sellall] as unknown as Command[]).map(
+    (c) => [c.data.name, c],
+  ),
 );

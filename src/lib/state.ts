@@ -173,6 +173,20 @@ export async function awardShards(userId: string, amount: number): Promise<numbe
   return row?.shards ?? 0;
 }
 
+/**
+ * Deducts shards only if the balance covers it. Conditional UPDATE for the same
+ * reason the roll quota is one — read-then-write lets two concurrent spends
+ * both pass and drive the balance negative.
+ */
+export async function spendShards(userId: string, amount: number): Promise<boolean> {
+  const rows = await db.execute(sql`
+    UPDATE users SET shards = shards - ${amount}::int
+    WHERE id = ${userId} AND shards >= ${amount}::int
+    RETURNING shards
+  `);
+  return rows.length > 0;
+}
+
 export async function getShards(userId: string): Promise<number> {
   const [row] = await db
     .select({ shards: schema.users.shards })

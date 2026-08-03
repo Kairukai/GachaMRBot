@@ -54,9 +54,23 @@ base skins or Mythic costumes, so those tiers would be invented rather than
 sourced — both are pinned to weight 0 in `BASE_WEIGHTS`. Don't add synthesised
 Default cards back; this was tried and deliberately reverted.
 
-Weights sum to 100 and read as percentages. Epic (52.5%) intentionally sits
-above Rare (47%) because it matches supply. Legendary is 0.5%, so pity does most
-of the work and the hard cap at 90 is reached routinely.
+Weights sum to 100 and read as percentages: Rare 72 / Epic 27.5 / Legendary 0.5.
+Strictly descending — this deliberately runs against supply (Epic is ~half the
+pool but 27.5% of drops), because rarity should describe difficulty of
+acquisition, not inventory size. An earlier version had Epic above Rare to match
+supply; it was rejected as confusing. Legendary at 0.5% means pity does most of
+the work and the hard cap at 90 is reached routinely.
+
+**The shard economy is intentionally loss-making.** A roll's expected sell value
+is ~💠17; a bought roll costs 💠25. Keep `ROLL_COST_SHARDS` above expected sell
+value or players can farm infinite rolls by cycling their collection. All the
+numbers live in `src/lib/gacha.ts` (`SELL_VALUE`, `DUPLICATE_SHARDS`,
+`ROLL_COST_SHARDS`).
+
+**Sell payouts are derived from rows actually deleted**, never from a count
+taken when the confirmation prompt was built — otherwise a trade completing in
+between pays for cards the user no longer owns. Same reasoning as the trade
+swap. Selling deletes the claim, so the card returns to the pool.
 
 **Rolls are cheap, claims are scarce.** Rolls are rate-limited per hour
 (default 20); claims default to 1/hour. That split is the engagement mechanic —
@@ -97,7 +111,8 @@ things (currency, shards).
 ## Current state
 
 Live and working: `/roll` (with claim race), `/collection`, `/rates`,
-`/commands`, `/trade`, shard consolation for rolling an owned card.
+`/commands`, `/trade`, `/sell`, `/sellall`, shard consolation for rolling an
+owned card, and shards spendable via `/roll shards:True`.
 498 cards across 52 heroes.
 
 `/commands` builds its list from the registry via a call-time `import()` —

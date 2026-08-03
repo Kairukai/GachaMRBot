@@ -16,6 +16,9 @@ import {
 } from "../src/lib/state.js";
 import { rollRarity, isHighTier, HARD_PITY, type Rarity } from "../src/lib/gacha.js";
 import { executeSwap } from "../src/lib/trade.js";
+import { sellOne, sellAll } from "../src/lib/sell.js";
+import { SELL_VALUE } from "../src/lib/gacha.js";
+import { getShards, spendShards } from "../src/lib/state.js";
 
 const G = "test-guild-concurrency";
 const U = "test-user-1";
@@ -221,6 +224,110 @@ test("a card in two trades can only be traded once", async () => {
   // Cards ended up swapped exactly once, not swapped back or duplicated.
   assert.equal(await ownerOf(c1), B);
   assert.equal(await ownerOf(c2), A);
+});
+
+test("selling a card pays out and releases it back to the pool", async () => {
+  await ready;
+  const U2 = "test-user-s1";
+  await ensureMember(U2, G);
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+
+  const [card] = await db
+    .select({ id: schema.cards.id, rarity: schema.cards.rarity })
+    .from(schema.cards)
+    .where(eq(schema.cards.rarity, "epic"))
+    .limit(1);
+  await db.insert(schema.claims).values({ guildId: G, userId: U2, cardId: card!.id });
+
+  const before = await getShards(U2);
+  const res = await sellOne(G, U2, card!.id);
+
+  assert.equal(res.sold, 1);
+  assert.equal(res.shards, SELL_VALUE.epic);
+  assert.equal(await getShards(U2), before + SELL_VALUE.epic);
+  assert.equal(await ownerOf(card!.id), null, "card should be unowned again");
+});
+
+test("selling a card you no longer own pays nothing", async () => {
+  await ready;
+  const U2 = "test-user-s2";
+  await ensureMember(U2, G);
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+
+  const [card] = await db.select({ id: schema.cards.id }).from(schema.cards).limit(1);
+  const before = await getShards(U2);
+
+  // Never owned it.
+  const res = await sellOne(G, U2, card!.id);
+  assert.equal(res.sold, 0);
+  assert.equal(await getShards(U2), before, "balance must not change");
+});
+
+test("double-clicking sell only pays once", async () => {
+  await ready;
+  const U2 = "test-user-s3";
+  await ensureMember(U2, G);
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+
+  const [card] = await db
+    .select({ id: schema.cards.id })
+    .from(schema.cards)
+    .where(eq(schema.cards.rarity, "rare"))
+    .limit(1);
+  await db.insert(schema.claims).values({ guildId: G, userId: U2, cardId: card!.id });
+
+  const before = await getShards(U2);
+  const results = await Promise.all([
+    sellOne(G, U2, card!.id),
+    sellOne(G, U2, card!.id),
+  ]);
+
+  assert.equal(results.filter((r) => r.sold === 1).length, 1, "exactly one sale");
+  assert.equal(await getShards(U2), before + SELL_VALUE.rare);
+});
+
+test("sellall pays for exactly the cards removed", async () => {
+  await ready;
+  const U2 = "test-user-s4";
+  await ensureMember(U2, G);
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+
+  const rares = await db
+    .select({ id: schema.cards.id })
+    .from(schema.cards)
+    .where(eq(schema.cards.rarity, "rare"))
+    .limit(5);
+  const [epic] = await db
+    .select({ id: schema.cards.id })
+    .from(schema.cards)
+    .where(eq(schema.cards.rarity, "epic"))
+    .limit(1);
+
+  await db.insert(schema.claims).values([
+    ...rares.map((c) => ({ guildId: G, userId: U2, cardId: c.id })),
+    { guildId: G, userId: U2, cardId: epic!.id },
+  ]);
+
+  const before = await getShards(U2);
+  const res = await sellAll(G, U2, "rare");
+
+  assert.equal(res.sold, rares.length);
+  assert.equal(res.shards, rares.length * SELL_VALUE.rare);
+  assert.equal(await getShards(U2), before + rares.length * SELL_VALUE.rare);
+  // The epic must survive — sellall is scoped to one rarity.
+  assert.equal(await ownerOf(epic!.id), U2, "other rarities must not be sold");
+});
+
+test("shards cannot be spent below zero", async () => {
+  await ready;
+  const U2 = "test-user-s5";
+  await ensureMember(U2, G);
+  await db.update(schema.users).set({ shards: 30 }).where(eq(schema.users.id, U2));
+
+  // Two concurrent 25-shard rolls against a 30 balance: only one may succeed.
+  const results = await Promise.all([spendShards(U2, 25), spendShards(U2, 25)]);
+  assert.equal(results.filter(Boolean).length, 1, "only one spend may succeed");
+  assert.equal(await getShards(U2), 5);
 });
 
 test("pity never exceeds the hard cap", () => {

@@ -16,6 +16,8 @@ const NOTES: Record<string, string> = {
   collection: "Pass a user to view someone else's. Shows your shard balance.",
   rates: "Odds are read from the live card pool, so they're always accurate.",
   trade: "One-for-one swap. Only the recipient can accept; offers expire in 5 minutes.",
+  sell: "Rare 💠10 · Epic 💠35 · Legendary 💠150. Always asks you to confirm first.",
+  sellall: "Sells **every** card of one rarity. Shows the full list before you confirm.",
   commands: "This list.",
 };
 

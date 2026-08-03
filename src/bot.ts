@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Events, MessageFlags } from "discord.js";
 import { commands } from "./commands/index.js";
 import { handleClaim, CLAIM_PREFIX } from "./lib/claim.js";
 import { handleTradeButton, TRADE_PREFIX } from "./lib/trade.js";
+import { handleSellButton, SELL_PREFIX } from "./lib/sell.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN is not set — copy .env.example to .env");
@@ -20,11 +21,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // keep working across restarts and shards. Other custom ids (pagination)
   // fall through to their own collectors.
   if (interaction.isButton()) {
-    const isClaim = interaction.customId.startsWith(CLAIM_PREFIX);
-    const isTrade = interaction.customId.startsWith(TRADE_PREFIX);
-    if (!isClaim && !isTrade) return;
+    const id = interaction.customId;
+    const handler = id.startsWith(CLAIM_PREFIX)
+      ? handleClaim
+      : id.startsWith(TRADE_PREFIX)
+        ? handleTradeButton
+        : id.startsWith(SELL_PREFIX)
+          ? handleSellButton
+          : null;
+    if (!handler) return;
     try {
-      await (isClaim ? handleClaim(interaction) : handleTradeButton(interaction));
+      await handler(interaction);
     } catch (err) {
       console.error("button failed:", err);
       await interaction

@@ -14,16 +14,30 @@ import {
   isHighTier,
   RARITY_META,
   DUPLICATE_SHARDS,
+  ROLL_COST_SHARDS,
   type Rarity,
 } from "../lib/gacha.js";
-import { ensureMember, consumeRoll, bumpPity, awardShards } from "../lib/state.js";
+import {
+  ensureMember,
+  consumeRoll,
+  bumpPity,
+  awardShards,
+  spendShards,
+  getShards,
+} from "../lib/state.js";
 import { availableRarities, randomCard } from "../lib/pool.js";
 import { claimButton } from "../lib/claim.js";
 
 export const data = new SlashCommandBuilder()
   .setName("roll")
   .setDescription("Drop a Marvel Rivals card. First to hit Claim keeps it.")
-  .setDMPermission(false);
+  .setDMPermission(false)
+  .addBooleanOption((o) =>
+    o
+      .setName("shards")
+      .setDescription(`Spend ${ROLL_COST_SHARDS} shards to roll past your hourly limit`)
+      .setRequired(false),
+  );
 
 function relative(d: Date) {
   return `<t:${Math.floor(d.getTime() / 1000)}:R>`;
@@ -46,18 +60,38 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
+  const useShards = interaction.options.getBoolean("shards") ?? false;
+
+  // Shards buy a roll past the hourly cap, but never past the cooldown — that
+  // would let someone with a large balance spam the channel.
   const gate = await consumeRoll(
     userId,
     guildId,
     settings!.rollCooldownSec,
-    settings!.rollsPerHour,
+    useShards ? Number.MAX_SAFE_INTEGER : settings!.rollsPerHour,
   );
+
   if (!gate.ok) {
     const msg =
       gate.reason === "cooldown"
         ? `Slow down — you can roll again ${relative(gate.retryAt)}.`
-        : `You're out of rolls. Refills ${relative(gate.retryAt)}.`;
+        : `You're out of rolls. Refills ${relative(gate.retryAt)}, or use ` +
+          `\`/roll shards:True\` to spend 💠 ${ROLL_COST_SHARDS}.`;
     return interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
+  }
+
+  let shardBalance: number | null = null;
+  if (useShards) {
+    if (!(await spendShards(userId, ROLL_COST_SHARDS))) {
+      const have = await getShards(userId);
+      return interaction.reply({
+        content:
+          `You need 💠 ${ROLL_COST_SHARDS} to buy a roll — you have 💠 ${have}. ` +
+          `Sell cards with \`/sell\` or \`/sellall\`.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    shardBalance = await getShards(userId);
   }
 
   const pool = await availableRarities();
@@ -91,7 +125,13 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       { name: "Rarity", value: meta.label, inline: true },
       { name: "Role", value: card.heroRole ?? "—", inline: true },
     )
-    .setFooter({ text: `Rolled by ${interaction.user.username}` });
+    .setFooter({
+      text:
+        `Rolled by ${interaction.user.username}` +
+        (shardBalance !== null
+          ? ` · paid 💠 ${ROLL_COST_SHARDS}, balance 💠 ${shardBalance}`
+          : ""),
+    });
 
   if (card.imageUrl) embed.setImage(card.imageUrl);
 

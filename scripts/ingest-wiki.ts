@@ -312,6 +312,10 @@ async function main() {
     imageUrl: images.get(p.icon) ?? null,
   }));
 
+  // Base skins are deliberately NOT cards. The wiki has no articles for them,
+  // so any Default tier would be invented rather than sourced — the pool is
+  // exactly what the wiki documents: Rare, Epic and Legendary costumes.
+
   const byRarity = cardRows.reduce<Record<string, number>>((a, c) => {
     a[c.rarity] = (a[c.rarity] ?? 0) + 1;
     return a;

@@ -42,6 +42,22 @@ rolls at an empty bucket. If Mythics appear in a later ingest they enter the
 table automatically. `/rates` reports pool-derived odds, so it can't drift from
 what the bot actually does.
 
+**Trades use optimistic concurrency, not locking.** A card may sit in several
+pending offers at once. `executeSwap` re-checks ownership inside its
+transaction by scoping both UPDATEs to the current owner — if either matches
+zero rows the whole thing rolls back, so a stale offer fails cleanly instead of
+duplicating or half-moving a card. Don't add card locking; it deadlocks and
+isn't needed.
+
+**The ladder is Rare / Epic / Legendary only.** The wiki has no articles for
+base skins or Mythic costumes, so those tiers would be invented rather than
+sourced — both are pinned to weight 0 in `BASE_WEIGHTS`. Don't add synthesised
+Default cards back; this was tried and deliberately reverted.
+
+Weights sum to 100 and read as percentages. Epic (52.5%) intentionally sits
+above Rare (47%) because it matches supply. Legendary is 0.5%, so pity does most
+of the work and the hard cap at 90 is reached routinely.
+
 **Rolls are cheap, claims are scarce.** Rolls are rate-limited per hour
 (default 20); claims default to 1/hour. That split is the engagement mechanic —
 tune claims, not rolls, to change how competitive a server feels.
@@ -81,7 +97,8 @@ things (currency, shards).
 ## Current state
 
 Live and working: `/roll` (with claim race), `/collection`, `/rates`,
-`/commands`, shard consolation for rolling an owned card.
+`/commands`, `/trade`, shard consolation for rolling an owned card.
+498 cards across 52 heroes.
 
 `/commands` builds its list from the registry via a call-time `import()` —
 `commands/index.ts` imports it, so a top-level import would be circular. The
@@ -91,9 +108,9 @@ cycle; don't remove them.
 **Shards have no sink.** They accumulate and display but nothing spends them.
 The intended sink is a targeted pull (spend shards to roll a specific hero).
 
-Not built: trading (needs a `trades` table plus card locking so a card can't be
-in two pending trades), wishlist DM pings (table exists, unused), admin config
-commands (`guild_settings` is tunable only via raw SQL right now).
+Not built: wishlist DM pings (table exists, unused), admin config commands
+(`guild_settings` is tunable only via raw SQL right now), multi-card trades
+(current flow is strictly one-for-one).
 
 ## Testing
 

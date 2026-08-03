@@ -15,6 +15,7 @@ const NOTES: Record<string, string> = {
   roll: "First person to hit **Claim** keeps the card. One owner per server.",
   collection: "Pass a user to view someone else's. Shows your shard balance.",
   rates: "Odds are read from the live card pool, so they're always accurate.",
+  trade: "One-for-one swap. Only the recipient can accept; offers expire in 5 minutes.",
   commands: "This list.",
 };
 

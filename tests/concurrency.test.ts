@@ -15,11 +15,13 @@ import {
   refundClaim,
 } from "../src/lib/state.js";
 import { rollRarity, isHighTier, HARD_PITY, type Rarity } from "../src/lib/gacha.js";
+import { executeSwap } from "../src/lib/trade.js";
 
 const G = "test-guild-concurrency";
 const U = "test-user-1";
 
 async function reset() {
+  await db.delete(schema.trades).where(eq(schema.trades.guildId, G));
   await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
   await db.delete(schema.memberState).where(eq(schema.memberState.guildId, G));
   await db.delete(schema.guildSettings).where(eq(schema.guildSettings.id, G));
@@ -129,6 +131,96 @@ test("only one user can own a card per guild, and losers are refunded", async ()
       );
     assert.equal(st!.claimsUsed, 0, `${users[i]} should have been refunded`);
   }
+});
+
+/** Puts two cards in known hands and returns them with a pending trade. */
+async function setupTrade(a: string, b: string) {
+  const cards = await db.select({ id: schema.cards.id }).from(schema.cards).limit(2);
+  const [c1, c2] = cards;
+  await ensureMember(a, G);
+  await ensureMember(b, G);
+  await db.delete(schema.trades).where(eq(schema.trades.guildId, G));
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+  await db.insert(schema.claims).values([
+    { guildId: G, userId: a, cardId: c1!.id },
+    { guildId: G, userId: b, cardId: c2!.id },
+  ]);
+  const [t] = await db
+    .insert(schema.trades)
+    .values({
+      guildId: G,
+      proposerId: a,
+      receiverId: b,
+      offerCardId: c1!.id,
+      wantCardId: c2!.id,
+    })
+    .returning({ id: schema.trades.id });
+  return { c1: c1!.id, c2: c2!.id, tradeId: t!.id };
+}
+
+async function ownerOf(cardId: string) {
+  const [row] = await db
+    .select({ userId: schema.claims.userId })
+    .from(schema.claims)
+    .where(and(eq(schema.claims.guildId, G), eq(schema.claims.cardId, cardId)));
+  return row?.userId ?? null;
+}
+
+test("trade swaps ownership of both cards", async () => {
+  await ready;
+  const A = "test-user-t1";
+  const B = "test-user-t2";
+  const { c1, c2, tradeId } = await setupTrade(A, B);
+
+  assert.equal(await executeSwap(tradeId), "ok");
+  assert.equal(await ownerOf(c1), B, "offered card should move to the receiver");
+  assert.equal(await ownerOf(c2), A, "wanted card should move to the proposer");
+});
+
+test("a stale trade fails without moving either card", async () => {
+  await ready;
+  const A = "test-user-t3";
+  const B = "test-user-t4";
+  const C = "test-user-t5";
+  const { c1, c2, tradeId } = await setupTrade(A, B);
+
+  // B gives the wanted card away before answering the offer.
+  await ensureMember(C, G);
+  await db
+    .update(schema.claims)
+    .set({ userId: C })
+    .where(and(eq(schema.claims.guildId, G), eq(schema.claims.cardId, c2)));
+
+  assert.equal(await executeSwap(tradeId), "ownership-changed");
+  // The critical assertion: the proposer's card must NOT have moved.
+  assert.equal(await ownerOf(c1), A, "offered card must stay put on failure");
+  assert.equal(await ownerOf(c2), C);
+});
+
+test("a card in two trades can only be traded once", async () => {
+  await ready;
+  const A = "test-user-t6";
+  const B = "test-user-t7";
+  const { c1, c2, tradeId } = await setupTrade(A, B);
+
+  // Second offer for the same pair — both are pending at once, which is allowed.
+  const [t2] = await db
+    .insert(schema.trades)
+    .values({
+      guildId: G,
+      proposerId: A,
+      receiverId: B,
+      offerCardId: c1,
+      wantCardId: c2,
+    })
+    .returning({ id: schema.trades.id });
+
+  const results = await Promise.all([executeSwap(tradeId), executeSwap(t2!.id)]);
+  assert.equal(results.filter((r) => r === "ok").length, 1, "exactly one swap applies");
+
+  // Cards ended up swapped exactly once, not swapped back or duplicated.
+  assert.equal(await ownerOf(c1), B);
+  assert.equal(await ownerOf(c2), A);
 });
 
 test("pity never exceeds the hard cap", () => {

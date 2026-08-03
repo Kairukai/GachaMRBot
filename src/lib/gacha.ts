@@ -1,12 +1,22 @@
 export type Rarity = "default" | "rare" | "epic" | "legendary" | "mythic";
 
-/** Relative weights, not percentages — they get normalised at roll time. */
+/**
+ * Weights sum to 100, so they read directly as percentages.
+ *
+ * The ladder is Rare / Epic / Legendary only — the wiki documents no base-skin
+ * or Mythic costumes, and a tier with no articles behind it would be invented
+ * rather than sourced. Both are pinned to 0 so that if such cards ever appear
+ * they don't silently start dropping.
+ *
+ * Epic sits above Rare here, which inverts the usual ladder but matches supply:
+ * Epic is roughly half the pool (246 of 498), Rare about a quarter.
+ */
 const BASE_WEIGHTS: Record<Rarity, number> = {
-  default: 55,
-  rare: 28,
-  epic: 13,
-  legendary: 3.5,
-  mythic: 0.5,
+  default: 0,
+  rare: 47,
+  epic: 52.5,
+  legendary: 0.5,
+  mythic: 0,
 };
 
 export const RARITY_META: Record<Rarity, { label: string; color: number; emoji: string }> = {

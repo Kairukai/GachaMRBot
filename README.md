@@ -139,6 +139,7 @@ Console prints `Logged in as YourBot#1234 (1 guilds)`. Run `/roll` in Discord.
 | `/roll` | Anyone | Drops a random card with a 30-second Claim button |
 | `/collection [user]` | Anyone | Paginated list of cards claimed in this server, 10 per page, sorted by rarity. Omit `user` for your own. Footer shows your shard balance. |
 | `/rates` | Anyone | Current drop odds and your pity counter. Ephemeral — only you see it. |
+| `/trade` | Anyone | Offer one of your cards for one of theirs. Both card fields autocomplete from real inventories. Only the recipient can accept; the proposer can withdraw. Offers expire after 5 minutes. |
 | `/commands` | Anyone | Lists every command. Built from the live registry, so it can't fall out of date. Ephemeral. |
 
 Rates shown by `/rates` are calculated from the live card pool, so they always
@@ -294,8 +295,9 @@ These are handled, and worth knowing before you touch the ingest:
   is correct data, not a parse bug.
 - **Role categories are unreliable** — they double-list heroes, which is why
   roles come from the infobox field instead.
-- **No Default or Mythic costumes exist** on the wiki, so the live pool is
-  rare/epic/legendary only. The bot handles this automatically (see below).
+- **Default skins have no wiki pages, and are deliberately not cards.** Every
+  hero has a base look, but it isn't a "costume" so it gets no article. The pool
+  is exactly what the wiki documents. Mythic costumes don't exist yet either.
 
 ---
 
@@ -305,32 +307,43 @@ Weights are **renormalised over rarities that actually have cards**. Since the
 pool has no Default or Mythic costumes, those tiers are skipped and the rest
 rescale:
 
-| Rarity | Base weight | Live rate | Cards in pool |
-|---|---|---|---|
-| ⚪ Default | 55 | — | 0 |
-| 🔵 Rare | 28 | 62.9% | 132 |
-| 🟣 Epic | 13 | 29.2% | 246 |
-| 🟡 Legendary | 3.5 | 7.9% | 120 |
-| 🔴 Mythic | 0.5 | — | 0 |
+| Rarity | Base rate | Cards in pool |
+|---|---|---|
+| 🔵 Rare | 47.0% | 132 |
+| 🟣 Epic | 52.5% | 246 |
+| 🟡 Legendary | 0.5% | 120 |
+
+The ladder is Rare / Epic / Legendary only. The wiki has no articles for base
+skins or Mythic costumes, so those tiers would have to be invented rather than
+sourced — both are pinned to weight 0 so they can't start dropping unnoticed if
+such cards ever appear.
+
+Epic sits above Rare, inverting the usual ladder, because it matches supply:
+Epic is roughly half the pool, Rare about a quarter.
 
 If Mythic costumes appear in a future ingest, they enter the table
 automatically with no code change.
 
 ### Pity
 
-Legendary and Mythic weight starts climbing at **50 rolls** without one, and is
+Legendary weight starts climbing at **50 rolls** without one, and is
 **guaranteed at 90**.
 
-Simulated over 300,000 rolls against the live pool:
+Simulated over 500,000 rolls against the live pool:
 
 ```
-epic       29.29%
-rare       62.79%
-legendary   7.91%
-worst streak: 67 rolls (hard pity 90)
+rare       46.33%
+epic       52.04%
+legendary   1.63%   (0.5% base, lifted by pity)
+average gap: 60 rolls between legendaries
+worst gap:   90 (the hard cap, reached regularly)
 ```
 
-Soft pity does the real work — the hard cap is rarely reached.
+At a 0.5% base rate, pity is doing most of the work — the hard cap at 90 is hit
+routinely rather than rarely, so a legendary is effectively earned by volume
+rather than luck. At the default 20 rolls/hour that's roughly three hours of
+rolling per legendary. Lower `HARD_PITY` in `src/lib/gacha.ts` if that feels
+too grindy for your server.
 
 ---
 
@@ -364,11 +377,12 @@ Seven tables, defined in `src/db/schema.ts`.
 | Table | Holds |
 |---|---|
 | `heroes` | 52 heroes — name, role, portrait |
-| `cards` | 498 costumes — hero, rarity, art URL, `rollable` flag |
+| `cards` | 498 costumes — hero, rarity, art URL, `rollable` flag. Base skins are not cards. |
 | `users` | Cross-server per-player data: currency, shards |
 | `guild_settings` | Per-server tuning (see [Configuration](#configuration)) |
 | `member_state` | Per-user-per-server counters: rolls, claims, cooldowns, pity |
 | `claims` | Who owns what, scoped to a server |
+| `trades` | One-for-one swap offers and their status |
 | `wishlist` | Wished-for cards *(table exists, feature not built)* |
 
 Two things worth knowing:
@@ -497,12 +511,13 @@ Built and working:
 - [x] `/rates` with live pool-derived odds
 - [x] Pity system
 - [x] Shard consolation for duplicates
+- [x] Trading — one-for-one swaps with autocomplete and atomic execution
 
 Not built yet:
 
 - [ ] **Shard sink** — spend shards on a targeted pull. Closes the loop; shards are currently unspendable.
 - [ ] **Admin config commands** — `guild_settings` is tunable only via raw SQL, which doesn't scale past your own server.
-- [ ] **Trading** — needs a `trades` table plus card locking so one card can't sit in two pending trades.
+- [ ] **Multi-card trades** — the current flow is strictly one card for one card.
 - [ ] **Wishlist DM pings** — table exists, unused. Strongest retention feature; needs care around DM rate limits and users with DMs closed.
 - [ ] **Currency and shop** — a second sink alongside shards.
 - [ ] **Deployment** — no Dockerfile for the bot itself yet; it currently runs as a local process.

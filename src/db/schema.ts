@@ -119,6 +119,48 @@ export const claims = pgTable(
   }),
 );
 
+export const tradeStatus = pgEnum("trade_status", [
+  "pending",
+  "accepted",
+  "declined",
+  "cancelled",
+]);
+
+/**
+ * One-for-one card swaps. Cards are deliberately NOT locked while a trade is
+ * pending — a card can sit in several offers at once, and whichever accept
+ * lands first wins. The swap re-checks ownership inside its transaction, so a
+ * stale offer fails cleanly instead of duplicating a card.
+ */
+export const trades = pgTable(
+  "trades",
+  {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id")
+      .notNull()
+      .references(() => guildSettings.id, { onDelete: "cascade" }),
+    proposerId: text("proposer_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    receiverId: text("receiver_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Card the proposer gives up. */
+    offerCardId: text("offer_card_id")
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    /** Card the proposer wants in return. */
+    wantCardId: text("want_card_id")
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    status: tradeStatus("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    byReceiver: index("trades_receiver_idx").on(t.guildId, t.receiverId, t.status),
+  }),
+);
+
 export const wishlist = pgTable(
   "wishlist",
   {

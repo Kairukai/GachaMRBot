@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Events, MessageFlags } from "discord.js";
 import { commands } from "./commands/index.js";
 import { handleClaim, CLAIM_PREFIX } from "./lib/claim.js";
+import { handleTradeButton, TRADE_PREFIX } from "./lib/trade.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN is not set — copy .env.example to .env");
@@ -19,14 +20,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // keep working across restarts and shards. Other custom ids (pagination)
   // fall through to their own collectors.
   if (interaction.isButton()) {
-    if (!interaction.customId.startsWith(CLAIM_PREFIX)) return;
+    const isClaim = interaction.customId.startsWith(CLAIM_PREFIX);
+    const isTrade = interaction.customId.startsWith(TRADE_PREFIX);
+    if (!isClaim && !isTrade) return;
     try {
-      await handleClaim(interaction);
+      await (isClaim ? handleClaim(interaction) : handleTradeButton(interaction));
     } catch (err) {
-      console.error("claim failed:", err);
+      console.error("button failed:", err);
       await interaction
-        .reply({ content: "Couldn't process that claim.", flags: MessageFlags.Ephemeral })
+        .reply({ content: "Couldn't process that.", flags: MessageFlags.Ephemeral })
         .catch(() => {});
+    }
+    return;
+  }
+
+  if (interaction.isAutocomplete()) {
+    const command = commands.get(interaction.commandName);
+    try {
+      await command?.autocomplete?.(interaction);
+    } catch (err) {
+      console.error(`autocomplete for /${interaction.commandName} failed:`, err);
+      await interaction.respond([]).catch(() => {});
     }
     return;
   }

@@ -19,6 +19,7 @@ import { executeSwap } from "../src/lib/trade.js";
 import { sellOne, sellAll } from "../src/lib/sell.js";
 import { SELL_VALUE } from "../src/lib/gacha.js";
 import { getShards, spendShards } from "../src/lib/state.js";
+import { collectorCount, leaderboardPage, memberRank } from "../src/lib/leaderboard.js";
 
 const G = "test-guild-concurrency";
 const U = "test-user-1";
@@ -328,6 +329,57 @@ test("shards cannot be spent below zero", async () => {
   const results = await Promise.all([spendShards(U2, 25), spendShards(U2, 25)]);
   assert.equal(results.filter(Boolean).length, 1, "only one spend may succeed");
   assert.equal(await getShards(U2), 5);
+});
+
+test("leaderboard ranks by collection value with correct breakdowns", async () => {
+  await ready;
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+
+  const pick = async (r: "rare" | "epic" | "legendary", n: number) =>
+    db
+      .select({ id: schema.cards.id })
+      .from(schema.cards)
+      .where(eq(schema.cards.rarity, r))
+      .limit(n);
+
+  const [rares, epics, legs] = await Promise.all([pick("rare", 6), pick("epic", 3), pick("legendary", 2)]);
+
+  const RICH = "test-user-l1"; // 2 legendary + 1 epic = 300 + 35 = 335
+  const MID = "test-user-l2"; //  2 epic              = 70
+  const POOR = "test-user-l3"; // 5 rare              = 50
+  for (const u of [RICH, MID, POOR]) await ensureMember(u, G);
+
+  await db.insert(schema.claims).values([
+    ...legs.map((c) => ({ guildId: G, userId: RICH, cardId: c.id })),
+    { guildId: G, userId: RICH, cardId: epics[0]!.id },
+    { guildId: G, userId: MID, cardId: epics[1]!.id },
+    { guildId: G, userId: MID, cardId: epics[2]!.id },
+    ...rares.slice(0, 5).map((c) => ({ guildId: G, userId: POOR, cardId: c.id })),
+  ]);
+
+  assert.equal(await collectorCount(G), 3);
+
+  const rows = await leaderboardPage(G, 0);
+  assert.deepEqual(
+    rows.map((r) => r.userId),
+    [RICH, MID, POOR],
+    "should be ordered by value descending",
+  );
+
+  const top = rows[0]!;
+  assert.equal(top.legendary, 2);
+  assert.equal(top.epic, 1);
+  assert.equal(top.rare, 0);
+  assert.equal(top.total, 3);
+  assert.equal(top.value, 2 * SELL_VALUE.legendary + SELL_VALUE.epic);
+
+  assert.equal(rows[1]!.value, 2 * SELL_VALUE.epic);
+  assert.equal(rows[2]!.value, 5 * SELL_VALUE.rare);
+
+  // Ranks must agree with the page ordering.
+  assert.equal((await memberRank(G, RICH))?.rank, 1);
+  assert.equal((await memberRank(G, POOR))?.rank, 3);
+  assert.equal(await memberRank(G, "test-user-nobody"), null);
 });
 
 test("pity never exceeds the hard cap", () => {

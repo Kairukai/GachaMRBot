@@ -20,7 +20,7 @@ their server.
 - [Configuration](#configuration)
 - [Card data and ingestion](#card-data-and-ingestion)
 - [Drop rates and pity](#drop-rates-and-pity)
-- [Shards](#shards)
+- [Shards and the economy](#shards-and-the-economy)
 - [Database schema](#database-schema)
 - [Project structure](#project-structure)
 - [Why it's built this way](#why-its-built-this-way)
@@ -142,6 +142,7 @@ Console prints `Logged in as YourBot#1234 (1 guilds)`. Run `/roll` in Discord.
 | `/collection [user]` | Anyone | Paginated list of cards claimed in this server, 10 per page, sorted by rarity. Omit `user` for your own. Footer shows your shard balance. |
 | `/rates` | Anyone | Current drop odds and your pity counter. Ephemeral — only you see it. |
 | `/trade` | Anyone | Offer one of your cards for one of theirs. Both card fields autocomplete from real inventories. Only the recipient can accept; the proposer can withdraw. Offers expire after 5 minutes. |
+| `/flexers` | Anyone | Server leaderboard, ranked by total collection value with a per-rarity breakdown. Paginated 10 at a time; the footer shows your own rank even if you're off-page. |
 | `/commands` | Anyone | Lists every command. Built from the live registry, so it can't fall out of date. Ephemeral. |
 
 Rates shown by `/rates` are calculated from the live card pool, so they always
@@ -157,7 +158,8 @@ reflect what the bot will actually do rather than a static table that can drift.
 |---|---|
 | `npm run dev` | Single-process bot with hot reload. **Use this for development.** |
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm start` | Production entrypoint — runs `dist/index.js`, a sharding manager. Requires `npm run build` first. |
+| `npm start` | Production entrypoint — runs `dist/src/index.js`, a sharding manager. Requires `npm run build` first. |
+| `npm run migrate` | Apply migrations without the drizzle-kit CLI. This is what the container runs on boot. |
 
 > `src/bot.ts` (dev) and `src/index.ts` (production) are different entrypoints.
 > `index.ts` spawns shards; `bot.ts` is one plain process. Don't mix them up.
@@ -190,8 +192,18 @@ Flags combine: `npm run ingest -- --dry --limit 60`.
 | `npm run typecheck` | Type-check without emitting |
 
 Tests are integration tests — they need `docker compose up -d` and a populated
-card pool, because the bugs they cover (quota races, claim races) only exist at
-the database boundary. They clean up after themselves.
+card pool, because the bugs they cover (quota races, claim races, sell payouts)
+only exist at the database boundary. They clean up after themselves.
+
+Two gotchas if you add tests:
+
+- Node 20's runner only discovers `.js` files, so the `test` script names the
+  file explicitly. **New test files must be added to it** or they silently
+  won't run.
+- **Don't use root-level `before` hooks.** node:test didn't reliably finish one
+  before the first test started, so cleanup `DELETE`s raced the tests' own
+  `INSERT`s and produced a foreign-key failure that looked like a production
+  bug. Setup is an awaited module-level promise instead.
 
 Re-run `deploy-commands` whenever you add a command or change its name,
 description, or options. You don't need it for changes to command *logic*.
@@ -351,7 +363,7 @@ too grindy for your server.
 
 ---
 
-## Shards — the economy
+## Shards and the economy
 
 Shards are the currency. You earn them two ways and spend them on rolls.
 
@@ -385,6 +397,13 @@ rolls, but takes roughly 60 rolls to earn. Selling one is a bad trade, and
 Rares are the intended fuel. They're 72% of drops against a 132-card pool, so
 they repeat constantly once your collection fills out — `/sellall rare` is the
 natural way to convert clutter into rolls.
+
+### Collection value
+
+`/flexers` ranks the server by total collection value, computed from the same
+`SELL_VALUE` table `/sell` pays out from — so the leaderboard can never claim a
+collection is worth something different from what it would actually sell for.
+That also means **selling drops your rank**, which is the intended tension.
 
 ### Selling returns cards to the pool
 
@@ -433,28 +452,45 @@ To set a card aside without deleting claim history, set `cards.rollable = false`
 
 ## Project structure
 
+Commands hold presentation and validation; `lib/` holds the logic they call,
+which is what the tests exercise directly.
+
 ```
 src/
-  bot.ts                 Dev entrypoint — single process, logs in, routes interactions
+  bot.ts                 Dev entrypoint — logs in, routes commands/buttons/autocomplete
   index.ts               Production entrypoint — ShardingManager
+  migrate.ts             Applies migrations on container boot
   deploy-commands.ts     Registers slash commands with Discord
   commands/
-    index.ts             Command registry
-    roll.ts              Card drop, claim race, shard consolation
+    index.ts             Command registry (also drives /commands)
+    roll.ts              Card drop, shard-paid rolls, duplicate consolation
     collection.ts        Paginated collection view
     rates.ts             Drop odds and pity counter
+    trade.ts             /trade — offer builder with inventory autocomplete
+    sell.ts              /sell — single card, with confirmation
+    sellall.ts           /sellall — bulk by rarity, with confirmation
+    flexers.ts           /flexers — leaderboard rendering
+    help.ts              /commands — built from the registry
   db/
     schema.ts            Drizzle table definitions
     index.ts             Database connection
   lib/
-    gacha.ts             Rarity weights, pity curve, shard payouts
-    pool.ts              Which rarities have cards (cached)
-    state.ts             Rate limits, quotas, pity, shard balance
+    gacha.ts             Rarity weights, pity curve, shard and sell values
+    pool.ts              Which rarities have cards (cached) + random card pick
+    state.ts             Quotas, cooldowns, pity, shard balance
+    claim.ts             Persistent claim-button handler
+    trade.ts             Atomic swap + trade button handler
+    sell.ts              Sell/bulk-sell execution + confirmation handler
+    leaderboard.ts       Collection-value queries
     rarity.ts            Rarity normalisation shared by both ingest paths
 scripts/
   ingest-wiki.ts         Fandom wiki ingest (primary)
   ingest.ts              marvelrivalsapi.com ingest (fallback)
+tests/
+  concurrency.test.ts    Integration tests — races, economy, leaderboard
 drizzle/                 Generated SQL migrations
+Dockerfile               Multi-stage production image
+docker-compose.yml       Postgres, plus the bot behind a `prod` profile
 ```
 
 ---
@@ -494,6 +530,62 @@ costs nothing.
 config change rather than a rewrite.
 
 ---
+
+## Deployment
+
+The bot is containerised and provider-agnostic — it runs anywhere that can keep
+a container alive.
+
+```bash
+docker compose --profile prod up -d --build
+```
+
+That builds the image, waits for Postgres to report healthy, applies migrations,
+then starts the bot. Plain `docker compose up -d` still starts **only** Postgres,
+so the local `npm run dev` workflow is unchanged — the bot sits behind a `prod`
+profile.
+
+Useful commands:
+
+```bash
+docker compose logs -f bot                  # follow logs
+docker compose --profile prod ps            # status
+docker compose --profile prod up -d --build # redeploy after code changes
+docker compose --profile prod down          # stop everything
+```
+
+### What the image does
+
+- **Multi-stage build** — TypeScript is compiled in a builder stage; the runtime
+  image installs production dependencies only. ~245 MB.
+- **Runs as non-root** (the `node` user).
+- **Migrations run on boot**, using drizzle-orm's programmatic migrator rather
+  than the drizzle-kit CLI, which is a devDependency and absent in production.
+- **tini as PID 1** — `ShardingManager` spawns child processes, so without
+  proper signal forwarding and zombie reaping a stopped container leaves
+  orphaned shards behind.
+- **`restart: unless-stopped`** — verified: killing the manager process inside
+  the container brings it back automatically (`RestartCount` increments and the
+  bot reconnects). Note `docker compose kill` is treated as a *manual* stop, so
+  it deliberately does **not** trigger a restart.
+
+### Where to host it
+
+A gateway bot holds a persistent WebSocket, so serverless platforms (Vercel,
+Netlify, Lambda, Cloudflare Workers) can't run it, and anything that sleeps when
+idle — like Render's free tier — will drop the connection. GitHub can't host it
+either: Pages is static, Codespaces idles out, and Actions caps jobs at 6 hours
+and forbids using CI as always-on compute.
+
+What works: **Railway** (~$5/mo, simplest), **Fly.io** (~$5–10/mo), or any
+**VPS** (~$4–6/mo — Hetzner, DigitalOcean — where this compose file runs
+essentially as-is). Self-hosting is fine only if the machine is genuinely on 24/7.
+
+### Before going live
+
+Unset `DEV_GUILD_ID` so commands register globally, and run
+`npm run deploy-commands` once. Global registration takes up to an hour to
+propagate.
 
 ## Troubleshooting
 
@@ -545,6 +637,8 @@ Built and working:
 - [x] Shard consolation for duplicates
 - [x] Trading — one-for-one swaps with autocomplete and atomic execution
 - [x] Sell economy — `/sell`, `/sellall`, and shards spendable on rolls
+- [x] `/flexers` leaderboard
+- [x] Production Docker image with migrations on boot and verified crash recovery
 
 Not built yet:
 
@@ -553,7 +647,7 @@ Not built yet:
 - [ ] **Multi-card trades** — the current flow is strictly one card for one card.
 - [ ] **Wishlist DM pings** — table exists, unused. Strongest retention feature; needs care around DM rate limits and users with DMs closed.
 - [ ] **Currency and shop** — a second sink alongside shards.
-- [ ] **Deployment** — no Dockerfile for the bot itself yet; it currently runs as a local process.
+- [ ] **Pick a host** — the image is built and verified, it just isn't deployed anywhere yet.
 
 ---
 

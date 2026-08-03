@@ -6,6 +6,8 @@ competitive claims.
 ## Commands
 
 ```bash
+docker compose --profile prod up -d --build   # full stack: db + bot in containers
+docker compose up -d                          # db only (dev; bot runs via npm run dev)
 npm run dev              # single-process bot, watch mode (src/bot.ts)
 npm run deploy-commands  # register slash commands (guild-scoped if DEV_GUILD_ID set)
 npm run ingest           # wiki ingest — PRIMARY card data path, no API key
@@ -17,8 +19,21 @@ npm run typecheck
 docker compose up -d     # Postgres 16 on :5432
 ```
 
-`npm start` runs `dist/index.js`, a `ShardingManager`. `src/bot.ts` is the
+`npm start` runs `dist/src/index.js`, a `ShardingManager`. `src/bot.ts` is the
 single-process dev entrypoint — don't confuse the two.
+
+**tsc emits to `dist/src/`, not `dist/`** (rootDir is `.` so `scripts/` builds
+too). Anything referencing a built file must account for that — `src/index.ts`
+resolves the shard path via `import.meta.url` rather than hardcoding it, because
+the hardcoded version was wrong and only failed on deploy, never under `tsx`.
+
+Production migrations use `src/migrate.ts` (drizzle-orm's programmatic migrator),
+not the drizzle-kit CLI, which is a devDependency absent from the image. It
+resolves `drizzle/` from `process.cwd()` — correct in both the repo root and
+`/app`, unlike a module-relative path.
+
+The `bot` compose service sits behind a `prod` profile specifically so plain
+`docker compose up -d` still starts only Postgres for local dev.
 
 ## Core design decisions
 
@@ -111,8 +126,12 @@ things (currency, shards).
 ## Current state
 
 Live and working: `/roll` (with claim race), `/collection`, `/rates`,
-`/commands`, `/trade`, `/sell`, `/sellall`, shard consolation for rolling an
-owned card, and shards spendable via `/roll shards:True`.
+`/commands`, `/trade`, `/sell`, `/sellall`, `/flexers`, shard consolation for
+rolling an owned card, and shards spendable via `/roll shards:True`.
+
+`/flexers` derives collection value from `SELL_VALUE` in SQL (`lib/leaderboard.ts`)
+so the leaderboard can't disagree with sell payouts. Aggregate columns come back
+as strings from Postgres — they're `Number()`-cast in the mapper; don't drop that.
 498 cards across 52 heroes.
 
 `/commands` builds its list from the registry via a call-time `import()` —

@@ -3,18 +3,36 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: gacha
-      POSTGRES_PASSWORD: gacha
-      POSTGRES_DB: gacha
+      POSTGRES_USER: ${POSTGRES_USER:-gacha}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gacha}
+      POSTGRES_DB: ${POSTGRES_DB:-gacha}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gacha"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gacha}"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Behind a profile so plain `docker compose up -d` still starts only Postgres
+  # for local development (where the bot runs via `npm run dev`).
+  # Full stack:  docker compose --profile prod up -d --build
+  bot:
+    profiles: ["prod"]
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?DISCORD_TOKEN is required}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:?DISCORD_CLIENT_ID is required}
+      # Container talks to Postgres over the compose network, not localhost.
+      DATABASE_URL: postgres://${POSTGRES_USER:-gacha}:${POSTGRES_PASSWORD:-gacha}@db:5432/${POSTGRES_DB:-gacha}
+      # Unset in production so commands register globally.
+      DEV_GUILD_ID: ${DEV_GUILD_ID:-}
 
 volumes:
   pgdata:

@@ -6,6 +6,7 @@ import { handleTradeButton, TRADE_PREFIX } from "./lib/trade.js";
 import { handleSellButton, SELL_PREFIX } from "./lib/sell.js";
 import { handleGiveButton, GIVE_PREFIX } from "./lib/give.js";
 import { handleBuyButton, BUY_PREFIX } from "./lib/shop.js";
+import { startHealthServer } from "./lib/health.js";
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
     const envFile = process.env.DOTENV_CONFIG_PATH ?? ".env";
@@ -40,6 +41,9 @@ const client = new Client({
 client.once(Events.ClientReady, (c) => {
     console.log(`Logged in as ${c.user.tag} (${c.guilds.cache.size} guilds)`);
 });
+// No-op unless PORT is set (Render and similar). Reports 503 until the gateway
+// is up, so a platform health check can't call a half-started bot healthy.
+startHealthServer(() => client.isReady());
 client.on(Events.InteractionCreate, async (interaction) => {
     // Claim buttons are handled here, not by a per-message collector, so they
     // keep working across restarts and shards. Other custom ids (pagination)

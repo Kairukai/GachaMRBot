@@ -7,19 +7,22 @@ import {
 } from "discord.js";
 import { and, eq } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
-import { RARITY_META, SELL_VALUE, ROLL_PRICE_SHARDS, type Rarity } from "../lib/gacha.js";
-import { getShards } from "../lib/state.js";
+import { RARITY_META, SELL_VALUE, type Rarity } from "../lib/gacha.js";
 import { ownedCards } from "../lib/trade.js";
-import { confirmRow } from "../lib/sell.js";
+import { giveConfirmRow } from "../lib/give.js";
+import { ensureMember } from "../lib/state.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("sell")
-  .setDescription("Sell one of your cards for shards.")
+  .setName("give")
+  .setDescription("Give one of your cards to someone, for nothing in return.")
   .setDMPermission(false)
+  .addUserOption((o) =>
+    o.setName("user").setDescription("Who receives the card").setRequired(true),
+  )
   .addStringOption((o) =>
     o
       .setName("card")
-      .setDescription("The card to sell")
+      .setDescription("The card to give away")
       .setRequired(true)
       .setAutocomplete(true),
   );
@@ -27,8 +30,7 @@ export const data = new SlashCommandBuilder()
 export async function autocomplete(interaction: AutocompleteInteraction) {
   const guildId = interaction.guildId;
   if (!guildId) return interaction.respond([]);
-  const focused = interaction.options.getFocused();
-  const choices = await ownedCards(guildId, interaction.user.id, focused);
+  const choices = await ownedCards(guildId, interaction.user.id, interaction.options.getFocused());
   return interaction.respond(
     choices.length ? choices : [{ name: "You own no matching cards", value: "none" }],
   );
@@ -36,8 +38,21 @@ export async function autocomplete(interaction: AutocompleteInteraction) {
 
 export async function execute(interaction: ChatInputCommandInteraction) {
   const guildId = interaction.guildId!;
+  const recipient = interaction.options.getUser("user", true);
   const cardId = interaction.options.getString("card", true);
 
+  if (recipient.id === interaction.user.id) {
+    return interaction.reply({
+      content: "You already own it.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  if (recipient.bot) {
+    return interaction.reply({
+      content: "Bots don't collect cards.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
   if (cardId === "none") {
     return interaction.reply({
       content: "Pick a card from the autocomplete list.",
@@ -49,8 +64,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     .select({
       name: schema.cards.name,
       rarity: schema.cards.rarity,
-      hero: schema.heroes.name,
       image: schema.cards.imageUrl,
+      hero: schema.heroes.name,
     })
     .from(schema.claims)
     .innerJoin(schema.cards, eq(schema.claims.cardId, schema.cards.id))
@@ -70,36 +85,30 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
+  await ensureMember(recipient.id, guildId);
+
   const rarity = owned.rarity as Rarity;
   const meta = RARITY_META[rarity];
-  const payout = SELL_VALUE[rarity];
-  const balance = await getShards(interaction.user.id);
 
   const embed = new EmbedBuilder()
-    .setTitle("⚠️ Confirm sale")
+    .setTitle("⚠️ Confirm gift")
     .setColor(meta.color)
     .setDescription(
-      `You are about to sell:\n\n` +
+      `You are about to give this card to <@${recipient.id}>:\n\n` +
         `## ${meta.emoji} ${owned.hero} — ${owned.name}\n` +
-        `**${meta.label}** · worth **💠 ${payout}** shards`,
-    )
-    .addFields(
-      { name: "Balance after", value: `💠 ${balance + payout}`, inline: true },
-      {
-        name: "That buys",
-        value: `${Math.floor((balance + payout) / ROLL_PRICE_SHARDS)} roll(s)`,
-        inline: true,
-      },
+        `**${meta.label}** · worth 💠 ${SELL_VALUE[rarity]}`,
     )
     .setFooter({
-      text: "This cannot be undone. The card returns to the pool for anyone to claim.",
+      text:
+        "You get nothing back. This cannot be undone — only they can give it " +
+        "back. Use /trade if you want something in return.",
     });
 
   if (owned.image) embed.setThumbnail(owned.image);
 
   return interaction.reply({
     embeds: [embed],
-    components: [confirmRow(`one:${cardId}`, `Sell for 💠 ${payout}`, rarity === "legendary")],
+    components: [giveConfirmRow(recipient.id, cardId, rarity !== "rare")],
     flags: MessageFlags.Ephemeral,
   });
 }

@@ -16,15 +16,12 @@ import {
   rollRarity,
   RARITY_META,
   DUPLICATE_SHARDS,
-  ROLL_COST_SHARDS,
   type Rarity,
 } from "../lib/gacha.js";
 import {
   ensureMember,
   consumeRoll,
   awardShards,
-  spendShards,
-  getShards,
 } from "../lib/state.js";
 import { availableRarities, randomCard } from "../lib/pool.js";
 import { claimButton, editV2Components } from "../lib/claim.js";
@@ -35,14 +32,7 @@ export const data = new SlashCommandBuilder()
   .setName("roll5")
   .setDescription(`Roll ${BATCH} cards at once.`)
   .setDMPermission(false)
-  .addBooleanOption((o) =>
-    o
-      .setName("shards")
-      .setDescription(
-        `Spend ${ROLL_COST_SHARDS * BATCH} shards to roll past your hourly limit`,
-      )
-      .setRequired(false),
-  );
+  .setDMPermission(false);
 
 function relative(d: Date) {
   return `<t:${Math.floor(d.getTime() / 1000)}:R>`;
@@ -65,14 +55,12 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
-  const useShards = interaction.options.getBoolean("shards") ?? false;
-  const cost = ROLL_COST_SHARDS * BATCH;
 
   const gate = await consumeRoll(
     userId,
     guildId,
     settings!.rollCooldownSec,
-    useShards ? Number.MAX_SAFE_INTEGER : settings!.rollsPerHour,
+    settings!.rollsPerHour,
     BATCH,
   );
 
@@ -80,22 +68,11 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     const msg =
       gate.reason === "cooldown"
         ? `Slow down — you can roll again ${relative(gate.retryAt)}.`
-        : `You need ${BATCH} rolls available. Refills ${relative(gate.retryAt)}, or ` +
-          `use \`/roll5 shards:True\` to spend 💠 ${cost}.`;
+        : `You need ${BATCH} rolls available. Refills ${relative(gate.retryAt)}, ` +
+          "or buy more with `/buy`.";
     return interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
   }
 
-  let shardBalance: number | null = null;
-  if (useShards) {
-    if (!(await spendShards(userId, cost))) {
-      const have = await getShards(userId);
-      return interaction.reply({
-        content: `A 5-roll costs 💠 ${cost} — you have 💠 ${have}.`,
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-    shardBalance = await getShards(userId);
-  }
 
   const pool = await availableRarities();
   if (pool.length === 0) {
@@ -190,12 +167,11 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     containers.push(container);
   }
 
-  let balance = shardBalance;
+  let balance: number | null = null;
   if (shardsEarned > 0) balance = await awardShards(userId, shardsEarned);
 
   const footer = [
     `Rolled by ${interaction.user.username}`,
-    useShards ? `paid 💠 ${cost}` : null,
     shardsEarned > 0 ? `+💠 ${shardsEarned} from duplicates` : null,
     balance !== null ? `balance 💠 ${balance}` : null,
   ]

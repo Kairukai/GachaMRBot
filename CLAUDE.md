@@ -6,10 +6,12 @@ competitive claims.
 ## Commands
 
 ```bash
-docker compose --profile prod up -d --build   # full stack: db + bot in containers
-docker compose up -d                          # db only (dev; bot runs via npm run dev)
-npm run dev              # single-process bot, watch mode (src/bot.ts)
-npm run deploy-commands  # register slash commands (guild-scoped if DEV_GUILD_ID set)
+docker compose --profile prod up -d --build   # LIVE bot + db in containers
+docker compose up -d                          # db only
+npm run dev              # DEV bot, watch mode — uses .env.dev, not .env
+npm run dev:deploy       # register commands to the dev guild (instant)
+npm run dev:migrate / dev:ingest              # against gacha_dev
+npm run deploy-commands  # LIVE bot — global, up to 1h to propagate
 npm run ingest           # wiki ingest — PRIMARY card data path, no API key
 npm run ingest -- --dry --limit 60   # inspect without writing
 npm run ingest:api       # alternative source, needs MARVEL_RIVALS_API_KEY
@@ -34,6 +36,21 @@ resolves `drizzle/` from `process.cwd()` — correct in both the repo root and
 
 The `bot` compose service sits behind a `prod` profile specifically so plain
 `docker compose up -d` still starts only Postgres for local dev.
+
+**Two bot applications.** The live bot uses `.env` and registers commands
+globally (up to 1h propagation). Development uses a *separate* Discord
+application via `.env.dev`, selected with `DOTENV_CONFIG_PATH` — that's what the
+`dev:*` scripts set. `DEV_GUILD_ID` must stay **blank in `.env`** and **set in
+`.env.dev`**; a value in `.env` silently scopes the live bot's commands to one
+server, which is exactly how it once looked broken in every other guild.
+
+**The dev bot has its own database (`gacha_dev`) and its own server**
+(`MR Gacha Bot Dev`). Keep the databases separate regardless — if the dev bot is
+ever invited alongside the live one, `guild_id` collides and test rolls would
+create real claims, locking cards away from real players.
+
+Never run the live bot in Docker and `npm run live:dev` at the same time: two
+gateway sessions on one token means every interaction is handled twice.
 
 ## Core design decisions
 
@@ -69,18 +86,32 @@ base skins or Mythic costumes, so those tiers would be invented rather than
 sourced — both are pinned to weight 0 in `BASE_WEIGHTS`. Don't add synthesised
 Default cards back; this was tried and deliberately reverted.
 
-Weights sum to 100 and read as percentages: Rare 72 / Epic 26 / Legendary 2.
+Weights sum to 100 and read as percentages: Rare 72 / Epic 27.3 / Legendary 0.7.
 Strictly descending — this deliberately runs against supply (Epic is ~half the
-pool but 26% of drops), because rarity should describe difficulty of
+pool but 27.3% of drops), because rarity should describe difficulty of
 acquisition, not inventory size. An earlier version had Epic above Rare to match
-supply; it was rejected as confusing. Legendary is a flat 2% — roughly one per
-50 rolls, with a real tail (13% of players go 100 rolls without one).
+supply; it was rejected as confusing. Legendary is a flat 0.7% — roughly one per
+~143 rolls, with a long tail (about half of players go 100 rolls without one).
 
 **The shard economy is intentionally loss-making.** A roll's expected sell value
-is ~💠19.3; a bought roll costs 💠25. Keep `ROLL_COST_SHARDS` above expected sell
-value or players can farm infinite rolls by cycling their collection. All the
-numbers live in `src/lib/gacha.ts` (`SELL_VALUE`, `DUPLICATE_SHARDS`,
-`ROLL_COST_SHARDS`).
+is ~💠17.8; a bought roll costs 💠200 and a bought claim 💠1000. Keep
+`ROLL_PRICE_SHARDS` above expected sell value or players can farm infinite rolls
+by cycling their collection. All the numbers live in `src/lib/gacha.ts`
+(`SELL_VALUE`, `DUPLICATE_SHARDS`, `ROLL_PRICE_SHARDS`, `CLAIM_PRICE_SHARDS`).
+
+**`/buy` is the only shard sink.** `/roll` and `/roll5` used to take a
+`shards:True` option at a much lower price; that was removed when `/buy` landed,
+because two prices for the same thing meant everyone used the cheap one.
+
+**Purchased credits live in `member_state.bonus_rolls` / `bonus_claims`.**
+`consumeRoll`/`consumeClaim` spend the free hourly allowance first and only fall
+back to the bank, all inside the same atomic UPDATE. Bonuses deliberately
+survive the hourly window reset — they were paid for.
+
+**`/give` is one-way and uses the same ownership-scoped UPDATE as trades** — a
+card sold or traded between prompt and confirm moves nothing rather than
+transferring something the giver no longer holds. Gifts don't consume a claim,
+same as trades.
 
 **Sell payouts are derived from rows actually deleted**, never from a count
 taken when the confirmation prompt was built — otherwise a trade completing in
@@ -150,9 +181,8 @@ things (currency, shards).
 ## Current state
 
 Live and working: `/roll` (with claim race), `/collection`, `/rates`,
-`/roll5`, `/cdcheck`, `/showcase`, `/commands`, `/trade`, `/sell`, `/sellall`, `/flexers`,
-shard consolation for rolling an owned card, and shards spendable via
-`/roll shards:True`.
+`/roll5`, `/cdcheck`, `/showcase`, `/commands`, `/trade`, `/give`, `/buy`, `/sell`, `/sellall`, `/flexers`,
+shard consolation for rolling an owned card, and shards spendable via `/buy`.
 
 `/flexers` derives collection value from `SELL_VALUE` in SQL (`lib/leaderboard.ts`)
 so the leaderboard can't disagree with sell payouts. Aggregate columns come back

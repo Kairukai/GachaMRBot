@@ -87,6 +87,13 @@ export const memberState = pgTable(
     claimsUsed: integer("claims_used").notNull().default(0),
     claimsResetAt: timestamp("claims_reset_at", { withTimezone: true }),
     lastRollAt: timestamp("last_roll_at", { withTimezone: true }),
+    /**
+     * Purchased with shards via /buy. Spent only once the hourly allowance is
+     * exhausted, and deliberately NOT reset when the hourly window rolls over —
+     * you paid for these, so they keep until used.
+     */
+    bonusRolls: integer("bonus_rolls").notNull().default(0),
+    bonusClaims: integer("bonus_claims").notNull().default(0),
   },
   (t) => ({ pk: primaryKey({ columns: [t.userId, t.guildId] }) }),
 );

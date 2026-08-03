@@ -7,7 +7,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx watch src/bot.ts",
+    "dev": "cross-env DOTENV_CONFIG_PATH=.env.dev tsx watch src/bot.ts",
+    "dev:deploy": "cross-env DOTENV_CONFIG_PATH=.env.dev tsx src/deploy-commands.ts",
+    "dev:migrate": "cross-env DOTENV_CONFIG_PATH=.env.dev drizzle-kit migrate",
+    "dev:ingest": "cross-env DOTENV_CONFIG_PATH=.env.dev tsx scripts/ingest-wiki.ts",
+    "live:dev": "tsx watch src/bot.ts",
     "start": "node dist/src/index.js",
     "migrate": "node dist/src/migrate.js",
     "build": "tsc",
@@ -28,6 +32,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"

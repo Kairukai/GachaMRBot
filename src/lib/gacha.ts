@@ -14,15 +14,16 @@ export type Rarity = "default" | "rare" | "epic" | "legendary" | "mythic";
  * how many of them exist.
  *
  * There is no pity system: every roll is independent and these are the true
- * odds. A flat 2% Legendary averages one per 50 rolls, but has a long tail —
- * roughly 13% of players will go 100 rolls without one. That's the tradeoff for
- * honest, explainable odds.
+ * odds. A flat 0.7% Legendary averages one per ~143 rolls, with a long tail —
+ * about half of players will go 100 rolls without one, and a quarter will go
+ * 200. That's the tradeoff for honest, explainable odds and genuinely rare
+ * Legendaries.
  */
 const BASE_WEIGHTS: Record<Rarity, number> = {
   default: 0,
   rare: 72,
-  epic: 26,
-  legendary: 2,
+  epic: 27.3,
+  legendary: 0.7,
   mythic: 0,
 };
 
@@ -56,17 +57,18 @@ export const SELL_VALUE: Record<Rarity, number> = {
 };
 
 /**
- * Cost of buying an extra roll with shards.
+ * Shard prices for `/buy`.
  *
- * Priced so selling is a real option but never a shortcut. A roll's expected
- * sell value is ~19.3 shards (0.72×10 + 0.26×35 + 0.02×150), so paying 25 to
- * roll is a deliberate loss — the shard economy drains rather than compounds,
- * and nobody can farm infinite rolls by dumping their collection.
+ * These must stay above a roll's expected sell value (~17.8 shards:
+ * 0.72×10 + 0.273×35 + 0.007×150) or players could farm infinite rolls by
+ * cycling their collection. At 200 the margin is enormous, so the economy
+ * drains hard — a bought roll costs the equivalent of 20 sold Rares.
  *
- * Keep this above expected sell value. Raising the Legendary rate raises that
- * expectation, so the two numbers have to move together.
+ * Claims are priced as the genuinely scarce resource: 1000 shards is 100 sold
+ * Rares, or about seven Legendaries.
  */
-export const ROLL_COST_SHARDS = 25;
+export const ROLL_PRICE_SHARDS = 200;
+export const CLAIM_PRICE_SHARDS = 1000;
 
 /**
  * Weights restricted to rarities that actually have cards, then renormalised.

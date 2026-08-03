@@ -15,6 +15,8 @@ import * as flexers from "./flexers.js";
 import * as roll5 from "./roll5.js";
 import * as cdcheck from "./cdcheck.js";
 import * as showcase from "./showcase.js";
+import * as give from "./give.js";
+import * as buy from "./buy.js";
 
 export interface Command {
   data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder;
@@ -36,6 +38,8 @@ export const commands = new Map<string, Command>(
       trade,
       sell,
       sellall,
+      give,
+      buy,
       flexers,
     ] as unknown as Command[]
   ).map((c) => [c.data.name, c]),

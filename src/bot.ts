@@ -4,9 +4,19 @@ import { commands } from "./commands/index.js";
 import { handleClaim, CLAIM_PREFIX } from "./lib/claim.js";
 import { handleTradeButton, TRADE_PREFIX } from "./lib/trade.js";
 import { handleSellButton, SELL_PREFIX } from "./lib/sell.js";
+import { handleGiveButton, GIVE_PREFIX } from "./lib/give.js";
+import { handleBuyButton, BUY_PREFIX } from "./lib/shop.js";
 
 const token = process.env.DISCORD_TOKEN;
-if (!token) throw new Error("DISCORD_TOKEN is not set — copy .env.example to .env");
+if (!token) {
+  const envFile = process.env.DOTENV_CONFIG_PATH ?? ".env";
+  throw new Error(
+    `DISCORD_TOKEN is not set in ${envFile}. ` +
+      (envFile === ".env.dev"
+        ? "Copy .env.dev.example to .env.dev and fill in your DEV bot's token."
+        : "Copy .env.example to .env and fill it in."),
+  );
+}
 
 // Guilds is all we need: everything runs through slash commands and buttons,
 // so no Message Content intent and no privileged-intent review.
@@ -28,7 +38,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ? handleTradeButton
         : id.startsWith(SELL_PREFIX)
           ? handleSellButton
-          : null;
+          : id.startsWith(GIVE_PREFIX)
+            ? handleGiveButton
+            : id.startsWith(BUY_PREFIX)
+              ? handleBuyButton
+              : null;
     if (!handler) return;
     try {
       await handler(interaction);

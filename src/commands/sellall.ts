@@ -4,7 +4,7 @@ import {
   MessageFlags,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import { RARITY_META, SELL_VALUE, ROLL_COST_SHARDS, type Rarity } from "../lib/gacha.js";
+import { RARITY_META, SELL_VALUE, ROLL_PRICE_SHARDS, type Rarity } from "../lib/gacha.js";
 import { getShards } from "../lib/state.js";
 import { confirmRow, ownedAtRarity, type SellRarity } from "../lib/sell.js";
 
@@ -59,7 +59,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       { name: "Payout", value: `💠 ${total} (${each} each)`, inline: true },
       {
         name: "That buys",
-        value: `${Math.floor((balance + total) / ROLL_COST_SHARDS)} roll(s)`,
+        value: `${Math.floor((balance + total) / ROLL_PRICE_SHARDS)} roll(s)`,
         inline: true,
       },
     )

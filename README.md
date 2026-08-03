@@ -17,6 +17,7 @@ their server.
 - [Quick start](#quick-start)
 - [Discord commands](#discord-commands)
 - [npm scripts](#npm-scripts)
+- [Development setup](#development-setup)
 - [Configuration](#configuration)
 - [Card data and ingestion](#card-data-and-ingestion)
 - [Drop rates](#drop-rates)
@@ -136,14 +137,16 @@ Console prints `Logged in as YourBot#1234 (1 guilds)`. Run `/roll` in Discord.
 
 | Command | Who | What it does |
 |---|---|---|
-| `/roll [shards]` | Anyone | Drops a random card with a 30-second Claim button. Set `shards: True` to spend 💠25 and roll past your hourly limit. |
-| `/roll5 [shards]` | Anyone | Rolls 5 cards in one message. Each card is its own panel with its own Claim button attached. Costs 5 rolls (or 💠125). |
+| `/roll` | Anyone | Drops a random card with a 30-second Claim button. |
+| `/roll5` | Anyone | Rolls 5 cards in one message. Each card is its own panel with its own Claim button attached. Costs 5 rolls. |
 | `/cdcheck` | Anyone | Your roll cooldown, rolls and claims left this hour, and shard balance. Ephemeral. |
 | `/showcase` | Anyone | Posts one of your cards publicly with its art, value and claim date. Autocompletes from your collection. |
 | `/sell` | Anyone | Sell one card for shards. Autocompletes from your inventory and always asks you to confirm. |
 | `/sellall` | Anyone | Sell **every** card of one rarity. Lists what's going before you confirm. |
 | `/collection [user]` | Anyone | Paginated list of cards claimed in this server, 10 per page, sorted by rarity. Omit `user` for your own. Footer shows your shard balance. |
 | `/rates` | Anyone | Current drop odds, read from the live pool. Ephemeral — only you see it. |
+| `/buy` | Anyone | Spend shards on extra rolls (💠200) or claims (💠1000). Confirms first. Banked credits never expire. |
+| `/give` | Anyone | Hand a card to someone for nothing in return. Confirms first, then announces it publicly. |
 | `/trade` | Anyone | Offer one of your cards for one of theirs. Both card fields autocomplete from real inventories. Only the recipient can accept; the proposer can withdraw. Offers expire after 5 minutes. |
 | `/flexers` | Anyone | Server leaderboard, ranked by total collection value with a per-rarity breakdown. Paginated 10 at a time; the footer shows your own rank even if you're off-page. |
 | `/commands` | Anyone | Lists every command. Built from the live registry, so it can't fall out of date. Ephemeral. |
@@ -159,10 +162,17 @@ reflect what the bot will actually do rather than a static table that can drift.
 
 | Script | What it does |
 |---|---|
-| `npm run dev` | Single-process bot with hot reload. **Use this for development.** |
+| `npm run dev` | Dev bot with hot reload, using `.env.dev`. **Use this for development.** |
+| `npm run dev:deploy` | Register commands to the dev bot's test server. Instant. |
+| `npm run dev:migrate` | Apply migrations to the dev database |
+| `npm run dev:ingest` | Load cards into the dev database |
+| `npm run live:dev` | Run the **live** bot locally from `.env`. Rarely needed. |
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm start` | Production entrypoint — runs `dist/src/index.js`, a sharding manager. Requires `npm run build` first. |
 | `npm run migrate` | Apply migrations without the drizzle-kit CLI. This is what the container runs on boot. |
+
+See [Development setup](#development-setup) for what `.env.dev` is and why the
+dev bot needs its own database.
 
 > `src/bot.ts` (dev) and `src/index.ts` (production) are different entrypoints.
 > `index.ts` spawns shards; `bot.ts` is one plain process. Don't mix them up.
@@ -212,6 +222,49 @@ Re-run `deploy-commands` whenever you add a command or change its name,
 description, or options. You don't need it for changes to command *logic*.
 
 ---
+
+## Development setup
+
+The live bot registers commands **globally**, which takes up to an hour to
+propagate. That's fine for shipping and painful for iterating, so development
+uses a second, separate Discord application.
+
+Note the split:
+
+- **Behaviour changes** (rates, wording, bug fixes) need no registration at all
+  — edit code, `npm run dev`, done.
+- **Command definition changes** (new command, renamed option) need a deploy,
+  and that's the only thing the hour applies to.
+
+### Setting it up
+
+1. Create a **second application** in the
+   [Developer Portal](https://discord.com/developers/applications) — e.g.
+   "MR Gacha Bot Dev". Grab its token and Application ID.
+2. Invite it to your test server with the same four permissions.
+3. `cp .env.dev.example .env.dev` and fill in the token and client id.
+4. `npm run dev:migrate && npm run dev:ingest`
+5. `npm run dev:deploy && npm run dev`
+
+You'll then have two bots in the member list: the live one, and a dev one you
+can break freely.
+
+### Why the dev bot needs its own database
+
+The dev bot usually sits in the *same* Discord server as the live one, so
+`guild_id` is identical. Sharing a database would mean test rolls creating real
+claims — locking cards away from real players. `.env.dev` therefore points at a
+separate `gacha_dev` database on the same Postgres container.
+
+Create it once with:
+
+```bash
+docker compose exec db psql -U gacha -d postgres -c "CREATE DATABASE gacha_dev OWNER gacha;"
+```
+
+> **Don't run two bots on one token.** The live bot runs in Docker; if you also
+> run `npm run live:dev`, both connect as the same user and every interaction is
+> handled twice. Stop the container first, or just use the dev bot.
 
 ## Configuration
 
@@ -327,8 +380,8 @@ rescale:
 | Rarity | Base rate | Cards in pool |
 |---|---|---|
 | 🔵 Rare | 72.0% | 132 |
-| 🟣 Epic | 26.0% | 246 |
-| 🟡 Legendary | 2.0% | 120 |
+| 🟣 Epic | 27.3% | 246 |
+| 🟡 Legendary | 0.7% | 120 |
 
 The ladder is Rare / Epic / Legendary only. The wiki has no articles for base
 skins or Mythic costumes, so those tiers would have to be invented rather than
@@ -336,7 +389,7 @@ sourced — both are pinned to weight 0 so they can't start dropping unnoticed i
 such cards ever appear.
 
 Drop rate runs deliberately against pool size: Epic is about half the card pool
-but only 26% of drops. Rarity describes how hard a card is to get, not how
+but only 27.3% of drops. Rarity describes how hard a card is to get, not how
 many exist — so expect Rare cards to repeat often, since 132 cards absorb 72% of
 all rolls.
 
@@ -349,10 +402,11 @@ Every roll is independent. There is no pity counter, no soft ramp, and no
 guarantee — the numbers above are the true odds on every single roll, which is
 what `/rates` reports.
 
-That means Legendaries follow a plain geometric distribution: one per 50 rolls
-on average, but with a real tail. Roughly 13% of players will go 100 rolls
-without one, and about 2% will go 200. That's the honest cost of simple,
-explainable odds over a system that quietly owes you a win.
+That means Legendaries follow a plain geometric distribution: one per ~143
+rolls on average, with a long tail. About half of players will go 100 rolls
+without one and a quarter will go 200. That's the honest cost of simple,
+explainable odds over a system that quietly owes you a win — and it makes a
+Legendary genuinely rare rather than a matter of time.
 
 ---
 
@@ -373,23 +427,34 @@ up, not just seeing it.
 
 ### Spending
 
-`/roll shards:True` costs **💠 25** and ignores your hourly roll limit. The
-cooldown still applies, so a big balance can't be turned into channel spam.
+`/buy` is the only place shards are spent:
+
+| Item | Price | What it does |
+|---|---|---|
+| Roll | 💠 200 | Banks one extra roll |
+| Claim | 💠 1,000 | Banks one extra claim |
+
+Banked credits are used **only after your hourly allowance runs out**, and they
+never expire — you paid for them, so an hourly reset doesn't wipe them.
 
 ### Why these numbers
 
-A roll's expected sell value is about **💠 17** (`0.72×10 + 0.275×35 +
-0.005×150`), while a roll costs 💠 25. **The economy is deliberately
-loss-making** — you cannot dump your collection to farm infinite rolls, and
-shards drain rather than compound.
+A roll's expected sell value is about **💠 17.8** (`0.72×10 + 0.273×35 +
+0.007×150`), and a bought roll costs 💠 200. **The economy is deliberately,
+heavily loss-making** — you cannot dump your collection to farm rolls.
 
-The asymmetry is sharpest at the top: a Legendary sells for 💠 150, which buys 6
-rolls, but takes roughly 60 rolls to earn. Selling one is a bad trade, and
-`/sellall legendary` says so explicitly before you confirm.
+In concrete terms:
+
+- One bought roll = **20 Rares sold**, or ~6 Epics, or 1.3 Legendaries
+- One bought claim = **100 Rares sold**, or ~7 Legendaries
+
+That makes purchases a rare luxury rather than a routine top-up. Claims are
+priced hardest because they're the genuinely scarce resource — buying past the
+hourly limit should hurt.
 
 Rares are the intended fuel. They're 72% of drops against a 132-card pool, so
 they repeat constantly once your collection fills out — `/sellall rare` is the
-natural way to convert clutter into rolls.
+natural way to convert clutter into shards.
 
 ### Collection value
 
@@ -465,6 +530,8 @@ src/
     trade.ts             /trade — offer builder with inventory autocomplete
     sell.ts              /sell — single card, with confirmation
     sellall.ts           /sellall — bulk by rarity, with confirmation
+    give.ts              /give — one-way card gift
+    buy.ts               /buy — shard shop
     flexers.ts           /flexers — leaderboard rendering
     help.ts              /commands — built from the registry
   db/
@@ -477,6 +544,8 @@ src/
     claim.ts             Persistent claim-button handler
     trade.ts             Atomic swap + trade button handler
     sell.ts              Sell/bulk-sell execution + confirmation handler
+    give.ts              One-way transfer + confirmation handler
+    shop.ts              Purchase execution + confirmation handler
     leaderboard.ts       Collection-value queries
     rarity.ts            Rarity normalisation shared by both ingest paths
 scripts/
@@ -596,6 +665,25 @@ overwrites — they override server-level grants, and this fails silently.
 **`/roll` says "No cards in the pool yet"**
 The `cards` table is empty. Run `npm run ingest`.
 
+**Bot joined a new server but shows no commands**
+Almost always `DEV_GUILD_ID` being set when the live commands were registered —
+guild-scoped commands exist *only* in that one guild, so every other server sees
+nothing. Blank it in `.env`, run `npm run deploy-commands`, and allow up to an
+hour for global propagation. Verify what's actually registered with:
+
+```bash
+npx tsx -e "import 'dotenv/config';import {REST,Routes} from 'discord.js';const r=new REST().setToken(process.env.DISCORD_TOKEN);console.log((await r.get(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID))).map(c=>c.name))"
+```
+
+**Every command appears twice**
+Both a global and a guild-scoped registration exist. Clear the guild copy by
+PUTting an empty array to `applicationGuildCommands`, keeping the global set.
+
+**Commands still missing after an hour**
+Try Ctrl+R in Discord first. There are two caches — Discord's propagation *and*
+your local client's copy of the command list. If one person sees the commands
+and another doesn't in the same server, it's the client cache, not registration.
+
 **Bot responds to everything twice**
 Two instances are running on the same token. Find and kill the extras:
 
@@ -631,9 +719,13 @@ Built and working:
 - [x] `/rates` with live pool-derived odds
 - [x] Shard consolation for duplicates
 - [x] Trading — one-for-one swaps with autocomplete and atomic execution
-- [x] Sell economy — `/sell`, `/sellall`, and shards spendable on rolls
+- [x] Sell economy — `/sell`, `/sellall`, and `/buy` for rolls and claims
 - [x] `/flexers` leaderboard
+- [x] `/give` — one-way card gifts
+- [x] `/roll5` batch rolls with per-card claim buttons (Components V2)
+- [x] `/cdcheck` and `/showcase`
 - [x] Production Docker image with migrations on boot and verified crash recovery
+- [x] Separate dev bot and dev database for iterating without touching live
 
 Not built yet:
 
@@ -641,7 +733,6 @@ Not built yet:
 - [ ] **Targeted pull** — spend a larger shard sum to roll a chosen hero.
 - [ ] **Multi-card trades** — the current flow is strictly one card for one card.
 - [ ] **Wishlist DM pings** — table exists, unused. Strongest retention feature; needs care around DM rate limits and users with DMs closed.
-- [ ] **Currency and shop** — a second sink alongside shards.
 - [ ] **Pick a host** — the image is built and verified, it just isn't deployed anywhere yet.
 
 ---

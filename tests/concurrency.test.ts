@@ -21,6 +21,8 @@ import { SELL_VALUE } from "../src/lib/gacha.js";
 import { getShards, spendShards } from "../src/lib/state.js";
 import { collectorCount, leaderboardPage, memberRank } from "../src/lib/leaderboard.js";
 import { editV2Components } from "../src/lib/claim.js";
+import { executeGive } from "../src/lib/give.js";
+import { purchase, PRICE } from "../src/lib/shop.js";
 import {
   ContainerBuilder,
   SectionBuilder,
@@ -512,8 +514,8 @@ test("drop rates match the configured weights and sum to 100%", async () => {
   const table = rates(pool);
 
   assert.equal(table.rare, "72.00%");
-  assert.equal(table.epic, "26.00%");
-  assert.equal(table.legendary, "2.00%");
+  assert.equal(table.epic, "27.30%");
+  assert.equal(table.legendary, "0.70%");
 
   const total = Object.values(table).reduce((s, v) => s + parseFloat(v!), 0);
   assert.ok(Math.abs(total - 100) < 0.01, `rates should sum to 100, got ${total}`);
@@ -527,7 +529,133 @@ test("rolls are independent — no pity, and the observed rate matches the adver
 
   const observed = (legendary / N) * 100;
   assert.ok(
-    Math.abs(observed - 2) < 0.15,
-    `expected ~2% legendary with no pity, observed ${observed.toFixed(3)}%`,
+    Math.abs(observed - 0.7) < 0.1,
+    `expected ~0.7% legendary with no pity, observed ${observed.toFixed(3)}%`,
   );
+});
+
+test("giving a card transfers it and only once", async () => {
+  await ready;
+  const A = "test-user-g1";
+  const B = "test-user-g2";
+  await ensureMember(A, G);
+  await ensureMember(B, G);
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+
+  const [card] = await db.select({ id: schema.cards.id }).from(schema.cards).limit(1);
+  await db.insert(schema.claims).values({ guildId: G, userId: A, cardId: card!.id });
+
+  assert.equal(await executeGive(G, A, B, card!.id), "ok");
+  assert.equal(await ownerOf(card!.id), B, "card should now belong to the recipient");
+
+  // A no longer owns it, so a second click must move nothing.
+  assert.equal(await executeGive(G, A, B, card!.id), "not-owned");
+  assert.equal(await ownerOf(card!.id), B);
+});
+
+test("concurrent gives of the same card only transfer once", async () => {
+  await ready;
+  const A = "test-user-g3";
+  const B = "test-user-g4";
+  const C = "test-user-g5";
+  for (const u of [A, B, C]) await ensureMember(u, G);
+  await db.delete(schema.claims).where(eq(schema.claims.guildId, G));
+
+  const [card] = await db.select({ id: schema.cards.id }).from(schema.cards).limit(1);
+  await db.insert(schema.claims).values({ guildId: G, userId: A, cardId: card!.id });
+
+  const results = await Promise.all([
+    executeGive(G, A, B, card!.id),
+    executeGive(G, A, C, card!.id),
+  ]);
+  assert.equal(results.filter((r) => r === "ok").length, 1, "only one give may apply");
+
+  const owner = await ownerOf(card!.id);
+  assert.ok(owner === B || owner === C, "card must belong to exactly one recipient");
+  assert.notEqual(owner, A);
+});
+
+test("buying credits debits shards and banks the purchase", async () => {
+  await ready;
+  const u = "test-user-p1";
+  await ensureMember(u, G);
+  await db.update(schema.users).set({ shards: 1500 }).where(eq(schema.users.id, u));
+
+  const r = await purchase(G, u, "roll", 2);
+  assert.ok(r.ok);
+  assert.equal(r.ok && r.spent, 2 * PRICE.roll);
+  assert.equal(await getShards(u), 1500 - 2 * PRICE.roll);
+  assert.equal(r.ok && r.rolls, 2);
+
+  // Not enough left for a claim (1000 > 1100 - 400 = ... check explicitly)
+  const balance = await getShards(u);
+  const poor = await purchase(G, u, "claim", 2);
+  assert.equal(poor.ok, false, "must refuse when short");
+  assert.equal(await getShards(u), balance, "a refused purchase spends nothing");
+});
+
+test("concurrent purchases cannot overdraw shards", async () => {
+  await ready;
+  const u = "test-user-p2";
+  await ensureMember(u, G);
+  await db.update(schema.users).set({ shards: PRICE.roll * 3 }).where(eq(schema.users.id, u));
+
+  const results = await Promise.all(
+    Array.from({ length: 6 }, () => purchase(G, u, "roll", 1)),
+  );
+  assert.equal(results.filter((r) => r.ok).length, 3, "only 3 may succeed");
+  assert.equal(await getShards(u), 0);
+});
+
+test("banked rolls are spent only after the hourly allowance runs out", async () => {
+  await ready;
+  const u = "test-user-p3";
+  await ensureMember(u, G);
+  await db
+    .update(schema.memberState)
+    .set({ bonusRolls: 2, rollsUsed: 0, rollsResetAt: null })
+    .where(and(eq(schema.memberState.userId, u), eq(schema.memberState.guildId, G)));
+
+  const LIMIT = 3;
+  for (let i = 0; i < LIMIT; i++) {
+    assert.equal((await consumeRoll(u, G, 0, LIMIT)).ok, true, `free roll ${i + 1}`);
+  }
+
+  const [mid] = await db
+    .select()
+    .from(schema.memberState)
+    .where(and(eq(schema.memberState.userId, u), eq(schema.memberState.guildId, G)));
+  assert.equal(mid!.bonusRolls, 2, "free allowance must not touch banked rolls");
+
+  // Allowance gone — the next two come out of the bank, then nothing.
+  assert.equal((await consumeRoll(u, G, 0, LIMIT)).ok, true);
+  assert.equal((await consumeRoll(u, G, 0, LIMIT)).ok, true);
+  assert.equal((await consumeRoll(u, G, 0, LIMIT)).ok, false, "bank exhausted");
+
+  const [end] = await db
+    .select()
+    .from(schema.memberState)
+    .where(and(eq(schema.memberState.userId, u), eq(schema.memberState.guildId, G)));
+  assert.equal(end!.bonusRolls, 0);
+  assert.equal(end!.rollsUsed, LIMIT, "banked rolls must not inflate rolls_used");
+});
+
+test("banked claims extend the claim quota", async () => {
+  await ready;
+  const u = "test-user-p4";
+  await ensureMember(u, G);
+  await db
+    .update(schema.memberState)
+    .set({ bonusClaims: 1, claimsUsed: 0, claimsResetAt: null })
+    .where(and(eq(schema.memberState.userId, u), eq(schema.memberState.guildId, G)));
+
+  assert.equal((await consumeClaim(u, G, 1)).ok, true, "free claim");
+  assert.equal((await consumeClaim(u, G, 1)).ok, true, "banked claim");
+  assert.equal((await consumeClaim(u, G, 1)).ok, false, "nothing left");
+
+  const [st] = await db
+    .select()
+    .from(schema.memberState)
+    .where(and(eq(schema.memberState.userId, u), eq(schema.memberState.guildId, G)));
+  assert.equal(st!.bonusClaims, 0);
 });

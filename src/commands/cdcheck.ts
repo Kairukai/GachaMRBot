@@ -5,7 +5,7 @@ import {
   type ChatInputCommandInteraction,
 } from "discord.js";
 import { ensureMember, ensureGuild, getShards } from "../lib/state.js";
-import { ROLL_COST_SHARDS } from "../lib/gacha.js";
+import { ROLL_PRICE_SHARDS, CLAIM_PRICE_SHARDS } from "../lib/gacha.js";
 
 export const data = new SlashCommandBuilder()
   .setName("cdcheck")
@@ -69,7 +69,15 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       },
       {
         name: "Shards",
-        value: `💠 ${shards} — buys ${Math.floor(shards / ROLL_COST_SHARDS)} roll(s)`,
+        value:
+          `💠 ${shards}\n` +
+          `buys ${Math.floor(shards / ROLL_PRICE_SHARDS)} roll(s) · ` +
+          `${Math.floor(shards / CLAIM_PRICE_SHARDS)} claim(s)`,
+        inline: true,
+      },
+      {
+        name: "Banked (bought)",
+        value: `${state.bonusRolls} roll(s) · ${state.bonusClaims} claim(s)`,
         inline: true,
       },
     )

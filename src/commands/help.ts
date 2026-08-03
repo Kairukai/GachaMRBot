@@ -21,6 +21,8 @@ const NOTES: Record<string, string> = {
   trade: "One-for-one swap. Only the recipient can accept; offers expire in 5 minutes.",
   sell: "Rare 💠10 · Epic 💠35 · Legendary 💠150. Always asks you to confirm first.",
   sellall: "Sells **every** card of one rarity. Shows the full list before you confirm.",
+  give: "One-way gift — no exchange. Asks you to confirm, then announces it publicly.",
+  buy: "Rolls 💠200, claims 💠1000. Banked credits kick in after your hourly allowance.",
   flexers: "Ranked by total collection value, using the same numbers `/sell` pays.",
   commands: "This list.",
 };

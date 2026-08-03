@@ -94,11 +94,18 @@ export async function consumeRoll(
 ): Promise<QuotaResult> {
   await ensureMember(userId, guildId);
 
+  // Free allowance first, purchased credits only once it's gone. Both branches
+  // live in one statement so the check and the spend stay atomic.
   const rows = await db.execute(sql`
     UPDATE member_state SET
       rolls_used = CASE
         WHEN rolls_reset_at IS NULL OR rolls_reset_at <= clock_timestamp() THEN ${count}::int
-        ELSE rolls_used + ${count}::int END,
+        WHEN rolls_used + ${count}::int <= ${rollsPerHour}::int THEN rolls_used + ${count}::int
+        ELSE rolls_used END,
+      bonus_rolls = CASE
+        WHEN rolls_reset_at IS NULL OR rolls_reset_at <= clock_timestamp() THEN bonus_rolls
+        WHEN rolls_used + ${count}::int <= ${rollsPerHour}::int THEN bonus_rolls
+        ELSE bonus_rolls - ${count}::int END,
       rolls_reset_at = CASE
         WHEN rolls_reset_at IS NULL OR rolls_reset_at <= clock_timestamp()
           THEN clock_timestamp() + interval '1 hour'
@@ -114,6 +121,7 @@ export async function consumeRoll(
         rolls_reset_at IS NULL
         OR rolls_reset_at <= clock_timestamp()
         OR rolls_used + ${count}::int <= ${rollsPerHour}::int
+        OR bonus_rolls >= ${count}::int
       )
     RETURNING rolls_used
   `);
@@ -134,7 +142,12 @@ export async function consumeClaim(
     UPDATE member_state SET
       claims_used = CASE
         WHEN claims_reset_at IS NULL OR claims_reset_at <= clock_timestamp() THEN 1
-        ELSE claims_used + 1 END,
+        WHEN claims_used < ${claimsPerHour}::int THEN claims_used + 1
+        ELSE claims_used END,
+      bonus_claims = CASE
+        WHEN claims_reset_at IS NULL OR claims_reset_at <= clock_timestamp() THEN bonus_claims
+        WHEN claims_used < ${claimsPerHour}::int THEN bonus_claims
+        ELSE bonus_claims - 1 END,
       claims_reset_at = CASE
         WHEN claims_reset_at IS NULL OR claims_reset_at <= clock_timestamp()
           THEN clock_timestamp() + interval '1 hour'
@@ -145,6 +158,7 @@ export async function consumeClaim(
         claims_reset_at IS NULL
         OR claims_reset_at <= clock_timestamp()
         OR claims_used < ${claimsPerHour}::int
+        OR bonus_claims >= 1
       )
     RETURNING claims_used
   `);

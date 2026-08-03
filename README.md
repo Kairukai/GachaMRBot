@@ -515,10 +515,12 @@ Commands hold presentation and validation; `lib/` holds the logic they call,
 which is what the tests exercise directly.
 
 ```
+index.js               One-line launcher for length-limited panel hosts
 src/
-  bot.ts                 Dev entrypoint — logs in, routes commands/buttons/autocomplete
-  index.ts               Production entrypoint — ShardingManager
-  migrate.ts             Applies migrations on container boot
+  bot.ts                 Client setup — logs in, routes commands/buttons/autocomplete
+  index.ts               Sharded entrypoint — ShardingManager
+  start.ts               Single-process entrypoint — migrations, then the bot
+  migrate.ts             Applies migrations on boot
   deploy-commands.ts     Registers slash commands with Discord
   commands/
     index.ts             Command registry (also drives /commands)
@@ -548,6 +550,8 @@ src/
     give.ts              One-way transfer + confirmation handler
     shop.ts              Purchase execution + confirmation handler
     leaderboard.ts       Collection-value queries
+    shop.ts              /buy purchases + confirmation handler
+    health.ts            HTTP health endpoint (only when PORT is set)
     rarity.ts            Rarity normalisation shared by both ingest paths
 scripts/
   ingest-wiki.ts         Fandom wiki ingest (primary)
@@ -606,92 +610,152 @@ config change rather than a rewrite.
 
 ## Deployment
 
-The bot is containerised and provider-agnostic — it runs anywhere that can keep
-a container alive.
+Production runs as a **Render Web Service** with **Neon** (managed Postgres) in
+the same region. The bot process is stateless — all state lives in Postgres — so
+it can be moved between hosts freely.
+
+### Render (current setup)
+
+| Setting | Value |
+|---|---|
+| Runtime | Node |
+| Build Command | `npm ci && npm run build` |
+| Start Command | `npm run start:single` |
+| Health Check Path | `/healthz` |
+| Region | Frankfurt — same as the database |
+| Auto-Deploy | On Commit |
+
+Environment variables:
+
+```
+DISCORD_TOKEN=...
+DISCORD_CLIENT_ID=...
+DATABASE_URL=postgresql://...neon.tech/neondb?sslmode=require
+DB_SSL=true
+DB_POOL_MAX=3
+```
+
+`DEV_GUILD_ID` must stay unset in production, or commands register to one guild
+only and every other server sees nothing.
+
+**Put the database in the same region as the bot.** A roll makes several
+sequential queries; cross-continent latency multiplies across all of them and
+can exceed Discord's 3-second interaction deadline. Your own location is
+irrelevant — you never talk to the database, only the bot does.
+
+### The free-tier catch
+
+Render's free tier only covers **Web Services**, which sleep after ~15 minutes
+without HTTP traffic. A sleeping bot is an offline bot. Background Workers — the
+correct service type — are paid.
+
+The workaround has two parts:
+
+1. **The bot binds an HTTP port.** `src/lib/health.ts` starts a tiny server when
+   `PORT` is set, which Render requires or it marks the deploy failed. It
+   returns **503 until the gateway is actually connected**, so a half-started
+   bot can't be reported healthy. On hosts that don't set `PORT` (Docker, panel
+   hosts) nothing is started.
+2. **An external pinger keeps it awake.** Point UptimeRobot or similar at
+   `https://<service>.onrender.com/healthz` every 5–10 minutes.
+
+Expect free-tier CPU throttling — health checks have been observed taking
+several seconds. Commands still work because every one of them defers, but it's
+the reason a `$4–6/mo` VPS is worth considering if the bot matters.
+
+### Monitoring and keepalive
+
+Live service: `https://gachamrbot.onrender.com`
+
+The health endpoint is the single source of truth for "is the bot actually
+working":
+
+| Response | Meaning |
+|---|---|
+| `200 {"status":"ok"}` | Gateway connected and serving |
+| `503 {"status":"starting"}` | Process up, Discord **not** connected |
+| No response | Service asleep, crashed, or redeploying |
+
+It answers on any path, so `/healthz` and `/` both work.
+
+**Set up an external pinger — this is not optional on Render's free tier.**
+Without traffic the service sleeps after ~15 minutes and the bot goes offline
+until something wakes it.
+
+1. [uptimerobot.com](https://uptimerobot.com) → **New monitor**
+2. Type **HTTP(s)**, URL `https://gachamrbot.onrender.com/healthz`
+3. Interval **5 minutes** (comfortably under the ~15-minute idle timeout)
+
+Because the endpoint reports 503 until the gateway connects, a "down" alert
+means the bot is genuinely broken — not merely that a web server stopped. That
+makes it a real monitor rather than just a keepalive.
+
+Don't ping more often than needed: Render's free tier allows 750 instance-hours
+per month, which one continuously-running service (~730 h) just fits, leaving no
+room for a second free service.
+
+### Docker (local and VPS)
 
 ```bash
 docker compose --profile prod up -d --build
 ```
 
-That builds the image, waits for Postgres to report healthy, applies migrations,
-then starts the bot. Plain `docker compose up -d` still starts **only** Postgres,
-so the local `npm run dev` workflow is unchanged — the bot sits behind a `prod`
-profile.
+Builds the image, waits for Postgres to be healthy, applies migrations, then
+starts the bot. Plain `docker compose up -d` still starts **only** Postgres, so
+local development is unaffected — the bot sits behind a `prod` profile.
 
-Useful commands:
+- Multi-stage build, production dependencies only, ~245 MB, runs as non-root
+- **tini as PID 1** — `ShardingManager` spawns children, so without signal
+  forwarding a stopped container leaves orphaned shards
+- `restart: unless-stopped`, verified: killing the process inside the container
+  brings it back. Note `docker compose kill` counts as a *manual* stop and
+  deliberately does not restart.
 
-```bash
-docker compose logs -f bot                  # follow logs
-docker compose --profile prod ps            # status
-docker compose --profile prod up -d --build # redeploy after code changes
-docker compose --profile prod down          # stop everything
-```
+### Entrypoints
 
-### What the image does
+There are three, for different hosts:
 
-- **Multi-stage build** — TypeScript is compiled in a builder stage; the runtime
-  image installs production dependencies only. ~245 MB.
-- **Runs as non-root** (the `node` user).
-- **Migrations run on boot**, using drizzle-orm's programmatic migrator rather
-  than the drizzle-kit CLI, which is a devDependency and absent in production.
-- **tini as PID 1** — `ShardingManager` spawns child processes, so without
-  proper signal forwarding and zombie reaping a stopped container leaves
-  orphaned shards behind.
-- **`restart: unless-stopped`** — verified: killing the manager process inside
-  the container brings it back automatically (`RestartCount` increments and the
-  bot reconnects). Note `docker compose kill` is treated as a *manual* stop, so
-  it deliberately does **not** trigger a restart.
+| Entry | Used by | Behaviour |
+|---|---|---|
+| `dist/src/index.js` | `npm start`, Docker | ShardingManager — spawns a shard child |
+| `dist/src/start.js` | `npm run start:single` | Migrations, then one process |
+| `index.js` | length-limited panel fields | One-line launcher importing `start.js` |
 
-### Where to host it
+**Prefer `start:single` on any host under ~512 MB.** Sharding only matters past
+Discord's 2,500-guild threshold and doubles memory for no benefit below it.
 
-A gateway bot holds a persistent WebSocket, so serverless platforms (Vercel,
-Netlify, Lambda, Cloudflare Workers) can't run it, and anything that sleeps when
-idle — like Render's free tier — will drop the connection. GitHub can't host it
-either: Pages is static, Codespaces idles out, and Actions caps jobs at 6 hours
-and forbids using CI as always-on compute.
+`index.js` exists because some panels cap the "main file" field at 16
+characters, and `dist/src/start.js` is 17.
 
-What works: **Railway** (~$5/mo, simplest), **Fly.io** (~$5–10/mo), any **VPS**
-(~$4–6/mo — Hetzner, DigitalOcean — where this compose file runs essentially
-as-is), or a **free panel host** such as Wispbyte (see below). Self-hosting is
-fine only if the machine is genuinely on 24/7.
+### Memory
 
-### Free hosting on a panel host (Wispbyte and similar)
+Measured **~75 MB RSS** connected, with a 21 MB heap. discord.js caches are
+trimmed in `src/bot.ts` to what the bot actually reads — message, member,
+presence, reaction and thread caches are all disabled, since interactions carry
+the user and guild on the payload. That fits 512 MB comfortably; 128 MB is too
+tight in practice.
 
-Panel hosts run a Node process for free but usually don't offer Postgres, and
-this bot can't run without it — `RETURNING`, `clock_timestamp()`,
-`COUNT(*) FILTER`, `array_position` and the `rarity` enum are all Postgres-only,
-and they're the atomic paths that keep claims and purchases correct. Porting to
-MySQL would be a rewrite, not a config change.
+### What won't work
 
-So split it:
+- **Serverless** (Vercel, Netlify, Lambda, Cloudflare Workers) — a gateway bot
+  holds a persistent WebSocket
+- **GitHub** — Pages is static, Codespaces idles out, Actions caps jobs at 6
+  hours and forbids CI-as-hosting
+- **MySQL-only hosts** — `RETURNING`, `clock_timestamp()`, `COUNT(*) FILTER`,
+  `array_position` and the `rarity` enum are Postgres-only, and they sit on the
+  atomic paths that keep claims and purchases correct
 
-- **Bot process** → the panel host (free)
-- **Postgres** → a managed free tier: [Neon](https://neon.tech),
-  [Supabase](https://supabase.com), or [Aiven](https://aiven.io/free-tier)
-
-Then:
-
-1. Push this repo to GitHub. **Never commit `.env`** — it's gitignored for a
-   reason, and the panel has its own env var settings.
-2. Create the database, copy its connection string into `DATABASE_URL`, and set
-   `DB_SSL=true` (managed Postgres requires TLS).
-3. Keep `DB_POOL_MAX` small — free tiers cap connections tightly. 5 is the
-   default and is plenty for one process.
-4. Set the startup command to **`npm run start:single`**, not `npm start`.
-
-That last point matters. `npm start` runs a `ShardingManager`, which spawns a
-second Node process — double the memory for no benefit until you approach
-Discord's 2,500-guild sharding threshold. `start:single` runs migrations then
-one plain process, which is what a free RAM allowance can actually afford.
-
-Run `npm run ingest` once against the new database to load the cards — either
-locally with `DATABASE_URL` pointed at it, or from the panel console.
+Panel hosts (Pterodactyl-based, e.g. Wispbyte) can work, but expect friction:
+tight disk quotas that `npm install`'s cache will exhaust, "main file" fields
+that only accept a path, and eggs whose start scripts contain bugs. Shipping a
+zip with `node_modules` pre-installed avoids the install step entirely — build
+it with a POSIX-safe tool, since PowerShell's `Compress-Archive` writes
+backslash separators that Linux extracts as literal filenames.
 
 ### Before going live
 
-Unset `DEV_GUILD_ID` so commands register globally, and run
-`npm run deploy-commands` once. Global registration takes up to an hour to
-propagate.
+Unset `DEV_GUILD_ID` and run `npm run deploy-commands` once. Global registration
+takes up to an hour to propagate.
 
 ## Troubleshooting
 
@@ -705,6 +769,21 @@ overwrites — they override server-level grants, and this fails silently.
 
 **`/roll` says "No cards in the pool yet"**
 The `cards` table is empty. Run `npm run ingest`.
+
+**Bot is offline and commands don't respond at all**
+On Render's free tier the service sleeps after ~15 minutes without HTTP traffic.
+Check `https://gachamrbot.onrender.com/healthz` — if it hangs then eventually
+answers, it was asleep and has just woken. Fix: confirm the UptimeRobot monitor
+is active and hitting it every 5 minutes.
+
+**`/healthz` returns 503**
+The process is running but the Discord gateway isn't connected. Almost always a
+bad or reset `DISCORD_TOKEN`. Check Render's logs for a login error.
+
+**Commands are slow (several seconds)**
+Free-tier CPU throttling. Every command defers, so this shows as a "thinking…"
+pause rather than a failure. No code change fixes it — it needs a paid instance
+or a VPS.
 
 **Bot joined a new server but shows no commands**
 Almost always `DEV_GUILD_ID` being set when the live commands were registered —
@@ -767,6 +846,7 @@ Built and working:
 - [x] `/cdcheck` and `/showcase`
 - [x] Production Docker image with migrations on boot and verified crash recovery
 - [x] Separate dev bot and dev database for iterating without touching live
+- [x] Deployed to Render with Neon Postgres, health endpoint and migrations on boot
 
 Not built yet:
 
@@ -774,7 +854,7 @@ Not built yet:
 - [ ] **Targeted pull** — spend a larger shard sum to roll a chosen hero.
 - [ ] **Multi-card trades** — the current flow is strictly one card for one card.
 - [ ] **Wishlist DM pings** — table exists, unused. Strongest retention feature; needs care around DM rate limits and users with DMs closed.
-- [ ] **Pick a host** — the image is built and verified, it just isn't deployed anywhere yet.
+- [ ] **Paid hosting** — running on Render's free tier, which needs an external pinger and throttles CPU. A small VPS or a Background Worker would remove both.
 
 ---
 

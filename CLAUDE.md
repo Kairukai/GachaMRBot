@@ -37,10 +37,30 @@ resolves `drizzle/` from `process.cwd()` — correct in both the repo root and
 The `bot` compose service sits behind a `prod` profile specifically so plain
 `docker compose up -d` still starts only Postgres for local dev.
 
-**`npm run start:single` exists for low-RAM hosts** (free panel hosts like
-Wispbyte). It migrates then runs one plain process; `npm start` spawns a
-`ShardingManager` plus a shard child, which is double the memory for no benefit
-below Discord's 2,500-guild threshold.
+**Three entrypoints, pick by host.** `dist/src/index.js` (`npm start`, Docker)
+is the ShardingManager. `dist/src/start.js` (`npm run start:single`) migrates
+then runs ONE process — use this under ~512 MB. Root `index.js` is a one-line
+launcher importing start.js, for panels whose "main file" field caps at 16
+characters (`dist/src/start.js` is 17).
+
+**Live at `https://gachamrbot.onrender.com`**, kept awake by an UptimeRobot
+monitor hitting `/healthz` every 5 minutes. If that monitor is removed the bot
+goes offline ~15 minutes later — this is the setup's single point of failure.
+
+**Production is Render + Neon, both in Frankfurt.** `src/lib/health.ts` binds an
+HTTP port only when `PORT` is set — Render fails a deploy without one, and its
+free tier sleeps a service with no traffic, so an external pinger hits
+`/healthz`. It returns 503 until the gateway connects, so a half-started bot
+can't report healthy. Nothing starts on hosts that don't set `PORT`.
+
+**discord.js caches are trimmed in `src/bot.ts`** (message, member, presence,
+reaction, thread all disabled). Interactions carry the user and guild on the
+payload, so none of it is read. ~75 MB RSS connected; don't re-enable caches
+without a reason.
+
+**Keep the database in the same region as the bot.** A roll makes several
+sequential queries, so cross-continent latency multiplies and can exceed
+Discord's 3-second deadline. The operator's own location is irrelevant.
 
 **Postgres is not optional.** `RETURNING`, `clock_timestamp()`,
 `COUNT(*) FILTER`, `array_position` and the `rarity` enum are all Postgres-only
@@ -203,6 +223,11 @@ things (currency, shards).
 Live and working: `/roll` (with claim race), `/collection`, `/rates`,
 `/roll5`, `/cdcheck`, `/showcase`, `/commands`, `/trade`, `/give`, `/buy`, `/sell`, `/sellall`, `/flexers`,
 shard consolation for rolling an owned card, and shards spendable via `/buy`.
+
+Command logic lives in `lib/` (`claim.ts`, `trade.ts`, `sell.ts`, `give.ts`,
+`shop.ts`, `leaderboard.ts`, `pool.ts`, `state.ts`); `commands/` holds
+presentation and validation. Tests exercise `lib/` directly — that's why the
+split exists.
 
 `/flexers` derives collection value from `SELL_VALUE` in SQL (`lib/leaderboard.ts`)
 so the leaderboard can't disagree with sell payouts. Aggregate columns come back

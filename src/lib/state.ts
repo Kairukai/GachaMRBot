@@ -1,36 +1,44 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 
-const HOUR_MS = 60 * 60 * 1000;
-
 export async function ensureUser(userId: string) {
   await db.insert(schema.users).values({ id: userId }).onConflictDoNothing();
 }
 
+/**
+ * Read first, insert only if missing. An `onConflictDoUpdate` that sets the row
+ * to itself still writes a new tuple on every call, which churns dead tuples on
+ * a table touched by every roll.
+ */
 export async function ensureGuild(guildId: string) {
+  const [found] = await db
+    .select()
+    .from(schema.guildSettings)
+    .where(eq(schema.guildSettings.id, guildId));
+  if (found) return found;
+
+  await db.insert(schema.guildSettings).values({ id: guildId }).onConflictDoNothing();
   const [row] = await db
-    .insert(schema.guildSettings)
-    .values({ id: guildId })
-    .onConflictDoUpdate({
-      target: schema.guildSettings.id,
-      // No-op update so we always get the row back in one round trip.
-      set: { id: guildId },
-    })
-    .returning();
+    .select()
+    .from(schema.guildSettings)
+    .where(eq(schema.guildSettings.id, guildId));
   return row!;
 }
 
 export async function ensureMember(userId: string, guildId: string) {
+  const where = and(
+    eq(schema.memberState.userId, userId),
+    eq(schema.memberState.guildId, guildId),
+  );
+
+  const [found] = await db.select().from(schema.memberState).where(where);
+  if (found) return found;
+
   await ensureUser(userId);
   await ensureGuild(guildId);
-  const [row] = await db
-    .insert(schema.memberState)
-    .values({ userId, guildId })
-    .onConflictDoUpdate({
-      target: [schema.memberState.userId, schema.memberState.guildId],
-      set: { userId },
-    })
-    .returning();
+  await db.insert(schema.memberState).values({ userId, guildId }).onConflictDoNothing();
+
+  const [row] = await db.select().from(schema.memberState).where(where);
   return row!;
 }
 
@@ -39,69 +47,117 @@ export type QuotaResult =
   | { ok: false; reason: "cooldown" | "quota"; retryAt: Date };
 
 /**
- * Consumes one roll if the user has budget. Window is a rolling hour that
- * starts on the first roll, so quotas refill predictably rather than on a
- * global clock everyone races.
+ * Why this is one statement: reading the counter, checking it, then writing
+ * back leaves a window where two concurrent rolls both read the same value and
+ * both pass. The WHERE clause makes the check and the increment atomic — if it
+ * matches no row, the caller was over quota or on cooldown, and we only then
+ * pay for a second query to find out which.
  */
+async function explainRollBlock(
+  userId: string,
+  guildId: string,
+  cooldownSec: number,
+): Promise<QuotaResult> {
+  const state = await ensureMember(userId, guildId);
+  const now = Date.now();
+  const ready = state.lastRollAt
+    ? new Date(state.lastRollAt.getTime() + cooldownSec * 1000)
+    : null;
+
+  if (ready && ready.getTime() > now) {
+    return { ok: false, reason: "cooldown", retryAt: ready };
+  }
+  return {
+    ok: false,
+    reason: "quota",
+    retryAt: state.rollsResetAt ?? new Date(now + 60 * 60 * 1000),
+  };
+}
+
 export async function consumeRoll(
   userId: string,
   guildId: string,
   cooldownSec: number,
   rollsPerHour: number,
 ): Promise<QuotaResult> {
-  const state = await ensureMember(userId, guildId);
-  const now = new Date();
+  await ensureMember(userId, guildId);
 
-  if (state.lastRollAt) {
-    const ready = new Date(state.lastRollAt.getTime() + cooldownSec * 1000);
-    if (ready > now) return { ok: false, reason: "cooldown", retryAt: ready };
-  }
+  const rows = await db.execute(sql`
+    UPDATE member_state SET
+      rolls_used = CASE
+        WHEN rolls_reset_at IS NULL OR rolls_reset_at <= now() THEN 1
+        ELSE rolls_used + 1 END,
+      rolls_reset_at = CASE
+        WHEN rolls_reset_at IS NULL OR rolls_reset_at <= now()
+          THEN now() + interval '1 hour'
+        ELSE rolls_reset_at END,
+      last_roll_at = now()
+    WHERE user_id = ${userId}
+      AND guild_id = ${guildId}
+      AND (
+        last_roll_at IS NULL
+        OR last_roll_at + (${cooldownSec}::int * interval '1 second') <= now()
+      )
+      AND (
+        rolls_reset_at IS NULL
+        OR rolls_reset_at <= now()
+        OR rolls_used < ${rollsPerHour}::int
+      )
+    RETURNING rolls_used
+  `);
 
-  const windowExpired = !state.rollsResetAt || state.rollsResetAt <= now;
-  const used = windowExpired ? 0 : state.rollsUsed;
-  const resetAt = windowExpired ? new Date(now.getTime() + HOUR_MS) : state.rollsResetAt!;
-
-  if (used >= rollsPerHour) return { ok: false, reason: "quota", retryAt: resetAt };
-
-  await db
-    .update(schema.memberState)
-    .set({ rollsUsed: used + 1, rollsResetAt: resetAt, lastRollAt: now })
-    .where(
-      and(
-        eq(schema.memberState.userId, userId),
-        eq(schema.memberState.guildId, guildId),
-      ),
-    );
-
-  return { ok: true };
+  if (rows.length > 0) return { ok: true };
+  return explainRollBlock(userId, guildId, cooldownSec);
 }
 
-/** Checked at button-press time, not roll time — you can roll freely, claiming is the scarce act. */
+/** Same atomicity argument as consumeRoll; claims are the scarcer resource. */
 export async function consumeClaim(
   userId: string,
   guildId: string,
   claimsPerHour: number,
 ): Promise<QuotaResult> {
+  await ensureMember(userId, guildId);
+
+  const rows = await db.execute(sql`
+    UPDATE member_state SET
+      claims_used = CASE
+        WHEN claims_reset_at IS NULL OR claims_reset_at <= now() THEN 1
+        ELSE claims_used + 1 END,
+      claims_reset_at = CASE
+        WHEN claims_reset_at IS NULL OR claims_reset_at <= now()
+          THEN now() + interval '1 hour'
+        ELSE claims_reset_at END
+    WHERE user_id = ${userId}
+      AND guild_id = ${guildId}
+      AND (
+        claims_reset_at IS NULL
+        OR claims_reset_at <= now()
+        OR claims_used < ${claimsPerHour}::int
+      )
+    RETURNING claims_used
+  `);
+
+  if (rows.length > 0) return { ok: true };
+
   const state = await ensureMember(userId, guildId);
-  const now = new Date();
+  return {
+    ok: false,
+    reason: "quota",
+    retryAt: state.claimsResetAt ?? new Date(Date.now() + 60 * 60 * 1000),
+  };
+}
 
-  const windowExpired = !state.claimsResetAt || state.claimsResetAt <= now;
-  const used = windowExpired ? 0 : state.claimsUsed;
-  const resetAt = windowExpired ? new Date(now.getTime() + HOUR_MS) : state.claimsResetAt!;
-
-  if (used >= claimsPerHour) return { ok: false, reason: "quota", retryAt: resetAt };
-
+/** Refunds a claim when the insert loses the race, so a miss costs nothing. */
+export async function refundClaim(userId: string, guildId: string) {
   await db
     .update(schema.memberState)
-    .set({ claimsUsed: used + 1, claimsResetAt: resetAt })
+    .set({ claimsUsed: sql`greatest(${schema.memberState.claimsUsed} - 1, 0)` })
     .where(
       and(
         eq(schema.memberState.userId, userId),
         eq(schema.memberState.guildId, guildId),
       ),
     );
-
-  return { ok: true };
 }
 
 /**

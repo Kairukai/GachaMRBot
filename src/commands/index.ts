@@ -6,6 +6,7 @@ import type {
 import * as roll from "./roll.js";
 import * as collection from "./collection.js";
 import * as rates from "./rates.js";
+import * as help from "./help.js";
 
 export interface Command {
   data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder;
@@ -13,5 +14,5 @@ export interface Command {
 }
 
 export const commands = new Map<string, Command>(
-  ([roll, collection, rates] as unknown as Command[]).map((c) => [c.data.name, c]),
+  ([roll, collection, rates, help] as unknown as Command[]).map((c) => [c.data.name, c]),
 );

@@ -80,8 +80,13 @@ things (currency, shards).
 
 ## Current state
 
-Live and working: `/roll` (with claim race), `/collection`, `/rates`, shard
-consolation for rolling an owned card.
+Live and working: `/roll` (with claim race), `/collection`, `/rates`,
+`/commands`, shard consolation for rolling an owned card.
+
+`/commands` builds its list from the registry via a call-time `import()` —
+`commands/index.ts` imports it, so a top-level import would be circular. The
+explicit return type and cast on `execute` are what stop TypeScript chasing that
+cycle; don't remove them.
 
 **Shards have no sink.** They accumulate and display but nothing spends them.
 The intended sink is a targeted pull (spend shards to roll a specific hero).
@@ -92,11 +97,18 @@ commands (`guild_settings` is tunable only via raw SQL right now).
 
 ## Testing
 
-No test framework. Verification has been throwaway `tsx` scripts run against
-the live database — simulate N rolls and assert distribution, or exercise a DB
-path and clean up test rows in a `finally`. If adding tests properly, the
-highest-value targets are `rollRarity` distribution/pity bounds and the claim
-race under concurrency.
+`npm test` → `tests/concurrency.test.ts`, run with node:test via tsx. These are
+integration tests against a real Postgres; they need `docker compose up -d` and
+a populated card pool, and they clean up their own rows.
+
+Node 20's test runner only discovers `.js` files, so the script names the test
+file explicitly — **add new test files to the `test` script** or they won't run.
+
+**Do not use root-level `before` hooks here.** node:test did not reliably await
+one before the first test started, so cleanup DELETEs raced the tests' own
+INSERTs and produced a spurious foreign-key failure that looked like a
+production bug. Setup is an awaited module-level promise (`const ready =
+reset()`) that each test awaits.
 
 ## Conventions
 

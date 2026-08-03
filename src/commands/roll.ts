@@ -1,14 +1,13 @@
 import {
   SlashCommandBuilder,
   EmbedBuilder,
+  ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ActionRowBuilder,
-  ComponentType,
   MessageFlags,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import {
   rollRarity,
@@ -17,14 +16,9 @@ import {
   DUPLICATE_SHARDS,
   type Rarity,
 } from "../lib/gacha.js";
-import {
-  ensureMember,
-  consumeRoll,
-  consumeClaim,
-  bumpPity,
-  awardShards,
-} from "../lib/state.js";
-import { availableRarities } from "../lib/pool.js";
+import { ensureMember, consumeRoll, bumpPity, awardShards } from "../lib/state.js";
+import { availableRarities, randomCard } from "../lib/pool.js";
+import { claimButton } from "../lib/claim.js";
 
 export const data = new SlashCommandBuilder()
   .setName("roll")
@@ -74,22 +68,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
-  const picked = rollRarity(state.pity, pool);
-  const [card] = await db
-    .select({
-      id: schema.cards.id,
-      name: schema.cards.name,
-      rarity: schema.cards.rarity,
-      imageUrl: schema.cards.imageUrl,
-      heroName: schema.heroes.name,
-      heroRole: schema.heroes.role,
-    })
-    .from(schema.cards)
-    .innerJoin(schema.heroes, eq(schema.cards.heroId, schema.heroes.id))
-    .where(and(eq(schema.cards.rarity, picked), eq(schema.cards.rollable, true)))
-    .orderBy(sql`random()`)
-    .limit(1);
-
+  const card = await randomCard(rollRarity(state.pity, pool));
   if (!card) {
     return interaction.reply({
       content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
@@ -132,72 +111,34 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     return interaction.reply({ embeds: [embed] });
   }
 
-  const claimId = `claim:${card.id}:${interaction.id}`;
-  const button = new ButtonBuilder()
-    .setCustomId(claimId)
-    .setLabel("Claim")
-    .setEmoji("💠")
-    .setStyle(ButtonStyle.Success);
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(button);
+  await interaction.reply({
+    embeds: [embed],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(claimButton(card.id))],
+  });
 
-  await interaction.reply({ embeds: [embed], components: [row] });
+  // Cosmetic only. The button is greyed out when the window passes, but the
+  // handler in lib/claim.ts is what actually enforces expiry — if this process
+  // dies first, a late click is still correctly rejected.
   const message = await interaction.fetchReply();
-
-  const collector = message.createMessageComponentCollector({
-    componentType: ComponentType.Button,
-    time: settings!.claimWindowSec * 1000,
-    // Anyone in the channel can race for it — that's the whole mechanic.
-    filter: (i) => i.customId === claimId,
-  });
-
-  let claimed = false;
-
-  collector.on("collect", async (i) => {
-    const quota = await consumeClaim(i.user.id, guildId, settings!.claimsPerHour);
-    if (!quota.ok) {
-      return i.reply({
-        content: `You've used your claims. Next one ${relative(quota.retryAt)}.`,
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    try {
-      await db.insert(schema.claims).values({ guildId, userId: i.user.id, cardId: card.id });
-    } catch {
-      // Unique index on (guild_id, card_id) settles simultaneous clicks in the
-      // database rather than in JS, so there is no window where two people win.
-      return i.reply({
-        content: "Too slow — someone claimed it first.",
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    claimed = true;
-    collector.stop("claimed");
-
-    embed.addFields({ name: "Claimed by", value: `<@${i.user.id}>`, inline: true });
-    await i.update({
-      embeds: [embed],
-      components: [
-        new ActionRowBuilder<ButtonBuilder>().addComponents(
-          button.setDisabled(true).setLabel("Claimed").setStyle(ButtonStyle.Secondary),
-        ),
-      ],
-    });
-  });
-
-  collector.on("end", async () => {
-    if (claimed) return;
-    await message
-      .edit({
-        components: [
-          new ActionRowBuilder<ButtonBuilder>().addComponents(
-            button.setDisabled(true).setLabel("Expired").setStyle(ButtonStyle.Secondary),
-          ),
-        ],
-      })
-      .catch(() => {}); // message may have been deleted
-  });
+  setTimeout(() => {
+    void (async () => {
+      const fresh = await message.fetch().catch(() => null);
+      if (!fresh || fresh.components.length === 0) return;
+      const claimed = fresh.embeds[0]?.fields?.some((f) => f.name === "Claimed by");
+      if (claimed) return;
+      await message
+        .edit({
+          components: [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId("claim:settled")
+                .setLabel("Expired")
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true),
+            ),
+          ],
+        })
+        .catch(() => {});
+    })();
+  }, settings!.claimWindowSec * 1000).unref?.();
 }
-
-export { DUPLICATE_SHARDS };

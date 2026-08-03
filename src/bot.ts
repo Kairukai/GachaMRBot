@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, Events, MessageFlags } from "discord.js";
+import { Client, GatewayIntentBits, Events, MessageFlags, Options } from "discord.js";
 import { commands } from "./commands/index.js";
 import { handleClaim, CLAIM_PREFIX } from "./lib/claim.js";
 import { handleTradeButton, TRADE_PREFIX } from "./lib/trade.js";
@@ -20,7 +20,27 @@ if (!token) {
 
 // Guilds is all we need: everything runs through slash commands and buttons,
 // so no Message Content intent and no privileged-intent review.
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+//
+// Caches are trimmed to what the bot actually reads. It never inspects
+// messages, members, presences, reactions or threads — interactions carry the
+// user and guild on the payload — so caching them is pure memory cost. This
+// matters on small free hosts with ~128 MB budgets.
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+  makeCache: Options.cacheWithLimits({
+    ...Options.DefaultMakeCacheSettings,
+    MessageManager: 0,
+    PresenceManager: 0,
+    GuildMemberManager: 0,
+    ReactionManager: 0,
+    ReactionUserManager: 0,
+    ThreadManager: 0,
+    ThreadMemberManager: 0,
+    GuildStickerManager: 0,
+    GuildScheduledEventManager: 0,
+    AutoModerationRuleManager: 0,
+  }),
+});
 
 client.once(Events.ClientReady, (c) => {
   console.log(`Logged in as ${c.user.tag} (${c.guilds.cache.size} guilds)`);

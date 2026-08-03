@@ -35,13 +35,16 @@ export async function autocomplete(interaction: AutocompleteInteraction) {
 }
 
 export async function execute(interaction: ChatInputCommandInteraction) {
+  // Deferred immediately: every path here queries Postgres, and a cold or
+  // distant database can exceed Discord's 3-second interaction deadline.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const guildId = interaction.guildId!;
   const cardId = interaction.options.getString("card", true);
 
   if (cardId === "none") {
-    return interaction.reply({
+    return interaction.editReply({
       content: "Pick a card from the autocomplete list.",
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -64,9 +67,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     );
 
   if (!owned) {
-    return interaction.reply({
+    return interaction.editReply({
       content: "You don't own that card in this server.",
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -97,9 +99,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
   if (owned.image) embed.setThumbnail(owned.image);
 
-  return interaction.reply({
+  return interaction.editReply({
     embeds: [embed],
     components: [confirmRow(`one:${cardId}`, `Sell for 💠 ${payout}`, rarity === "legendary")],
-    flags: MessageFlags.Ephemeral,
   });
 }

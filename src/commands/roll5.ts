@@ -74,11 +74,13 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   }
 
 
+  // Gates above answer ephemerally; from here the outcome is a public drop.
+  await interaction.deferReply();
+
   const pool = await availableRarities();
   if (pool.length === 0) {
-    return interaction.reply({
+    return interaction.editReply({
       content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -89,9 +91,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   }
 
   if (cards.length === 0) {
-    return interaction.reply({
+    return interaction.editReply({
       content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -178,7 +179,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     .filter(Boolean)
     .join(" · ");
 
-  await interaction.reply({
+  await interaction.editReply({
     // V2 messages carry no content or embeds — everything is components.
     flags: MessageFlags.IsComponentsV2,
     components: [

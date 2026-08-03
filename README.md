@@ -170,6 +170,7 @@ reflect what the bot will actually do rather than a static table that can drift.
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm start` | Production entrypoint — runs `dist/src/index.js`, a sharding manager. Requires `npm run build` first. |
 | `npm run migrate` | Apply migrations without the drizzle-kit CLI. This is what the container runs on boot. |
+| `npm run start:single` | Migrate, then run **one** process without sharding. Use this on low-RAM hosts. |
 
 See [Development setup](#development-setup) for what `.env.dev` is and why the
 dev bot needs its own database.
@@ -562,6 +563,13 @@ docker-compose.yml       Postgres, plus the bot behind a `prod` profile
 
 ## Why it's built this way
 
+**Every command defers its reply.** Discord drops an interaction that isn't
+answered in 3 seconds. Commands here make several sequential database round
+trips, so a distant or cold-started database could blow that budget and show
+"The application did not respond". Deferring converts the deadline to 15 minutes
+and shows a "thinking…" state instead. Mixed-visibility commands defer only
+after their gate checks, so failures like "you're out of rolls" stay private.
+
 **Claim races are settled by Postgres, not JavaScript.** When two people click
 Claim at the same instant, both handlers try to insert. The unique index means
 one succeeds and the other gets a constraint violation and an ephemeral "too
@@ -642,9 +650,42 @@ idle — like Render's free tier — will drop the connection. GitHub can't host
 either: Pages is static, Codespaces idles out, and Actions caps jobs at 6 hours
 and forbids using CI as always-on compute.
 
-What works: **Railway** (~$5/mo, simplest), **Fly.io** (~$5–10/mo), or any
-**VPS** (~$4–6/mo — Hetzner, DigitalOcean — where this compose file runs
-essentially as-is). Self-hosting is fine only if the machine is genuinely on 24/7.
+What works: **Railway** (~$5/mo, simplest), **Fly.io** (~$5–10/mo), any **VPS**
+(~$4–6/mo — Hetzner, DigitalOcean — where this compose file runs essentially
+as-is), or a **free panel host** such as Wispbyte (see below). Self-hosting is
+fine only if the machine is genuinely on 24/7.
+
+### Free hosting on a panel host (Wispbyte and similar)
+
+Panel hosts run a Node process for free but usually don't offer Postgres, and
+this bot can't run without it — `RETURNING`, `clock_timestamp()`,
+`COUNT(*) FILTER`, `array_position` and the `rarity` enum are all Postgres-only,
+and they're the atomic paths that keep claims and purchases correct. Porting to
+MySQL would be a rewrite, not a config change.
+
+So split it:
+
+- **Bot process** → the panel host (free)
+- **Postgres** → a managed free tier: [Neon](https://neon.tech),
+  [Supabase](https://supabase.com), or [Aiven](https://aiven.io/free-tier)
+
+Then:
+
+1. Push this repo to GitHub. **Never commit `.env`** — it's gitignored for a
+   reason, and the panel has its own env var settings.
+2. Create the database, copy its connection string into `DATABASE_URL`, and set
+   `DB_SSL=true` (managed Postgres requires TLS).
+3. Keep `DB_POOL_MAX` small — free tiers cap connections tightly. 5 is the
+   default and is plenty for one process.
+4. Set the startup command to **`npm run start:single`**, not `npm start`.
+
+That last point matters. `npm start` runs a `ShardingManager`, which spawns a
+second Node process — double the memory for no benefit until you approach
+Discord's 2,500-guild sharding threshold. `start:single` runs migrations then
+one plain process, which is what a free RAM allowance can actually afford.
+
+Run `npm run ingest` once against the new database to load the cards — either
+locally with `DATABASE_URL` pointed at it, or from the panel console.
 
 ### Before going live
 

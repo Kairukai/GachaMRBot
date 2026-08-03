@@ -25,6 +25,10 @@ export const data = new SlashCommandBuilder()
   );
 
 export async function execute(interaction: ChatInputCommandInteraction) {
+  // Deferred immediately: every path here queries Postgres, and a cold or
+  // distant database can exceed Discord's 3-second interaction deadline.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const guildId = interaction.guildId!;
   const rarity = interaction.options.getString("rarity", true) as SellRarity;
   const meta = RARITY_META[rarity as Rarity];
@@ -32,9 +36,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const cards = await ownedAtRarity(guildId, interaction.user.id, rarity);
 
   if (cards.length === 0) {
-    return interaction.reply({
+    return interaction.editReply({
       content: `You don't own any ${meta.label} cards in this server.`,
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -76,7 +79,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
-  return interaction.reply({
+  return interaction.editReply({
     embeds: [embed],
     components: [
       confirmRow(
@@ -85,6 +88,5 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         rarity !== "rare",
       ),
     ],
-    flags: MessageFlags.Ephemeral,
   });
 }

@@ -13,6 +13,10 @@ export const data = new SlashCommandBuilder()
   .setDMPermission(false);
 
 export async function execute(interaction: ChatInputCommandInteraction) {
+  // Deferred immediately: every path here queries Postgres, and a cold or
+  // distant database can exceed Discord's 3-second interaction deadline.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const pool = await availableRarities();
   const table = rates(pool);
 
@@ -30,5 +34,5 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         "true odds on every single roll. Read from the live card pool.",
     });
 
-  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  return interaction.editReply({ embeds: [embed] });
 }

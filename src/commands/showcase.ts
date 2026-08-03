@@ -42,6 +42,10 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
+  // Public on purpose, so defer publicly. Autocomplete only offers cards you
+  // own, which makes the not-owned path a rare edge case.
+  await interaction.deferReply();
+
   const [card] = await db
     .select({
       name: schema.cards.name,
@@ -63,9 +67,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     );
 
   if (!card) {
-    return interaction.reply({
+    return interaction.editReply({
       content: "You don't own that card in this server.",
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -102,6 +105,5 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
   if (card.image) embed.setImage(card.image);
 
-  // Public on purpose — the point of a showcase is that other people see it.
-  return interaction.reply({ embeds: [embed] });
+  return interaction.editReply({ embeds: [embed] });
 }

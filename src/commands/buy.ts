@@ -31,6 +31,10 @@ export const data = new SlashCommandBuilder()
   );
 
 export async function execute(interaction: ChatInputCommandInteraction) {
+  // Deferred immediately: every path here queries Postgres, and a cold or
+  // distant database can exceed Discord's 3-second interaction deadline.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const guildId = interaction.guildId!;
   const item = interaction.options.getString("item", true) as Item;
   const qty = interaction.options.getInteger("amount") ?? 1;
@@ -41,11 +45,10 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const total = PRICE[item] * qty;
 
   if (balance < total) {
-    return interaction.reply({
+    return interaction.editReply({
       content:
         `That costs 💠 ${total} — you have 💠 ${balance}, ` +
         `**${total - balance} short**.\nSell cards with \`/sell\` or \`/sellall\` to raise shards.`,
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -72,9 +75,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         "run out. They never expire.",
     });
 
-  return interaction.reply({
+  return interaction.editReply({
     embeds: [embed],
     components: [buyConfirmRow(item, qty, total)],
-    flags: MessageFlags.Ephemeral,
   });
 }

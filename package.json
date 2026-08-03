@@ -13,6 +13,7 @@
     "dev:ingest": "cross-env DOTENV_CONFIG_PATH=.env.dev tsx scripts/ingest-wiki.ts",
     "live:dev": "tsx watch src/bot.ts",
     "start": "node dist/src/index.js",
+    "start:single": "node dist/src/migrate.js && node dist/src/bot.js",
     "migrate": "node dist/src/migrate.js",
     "build": "tsc",
     "deploy-commands": "tsx src/deploy-commands.ts",

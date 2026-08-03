@@ -33,6 +33,10 @@ type CommandMeta = { data: { name: string; description: string } };
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<unknown> {
+  // Deferred immediately: every path here queries Postgres, and a cold or
+  // distant database can exceed Discord's 3-second interaction deadline.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   // Imported at call time: commands/index.ts imports this module to build the
   // registry, so a top-level import would be circular. The cast keeps TypeScript
   // from chasing that cycle back into its own inference.
@@ -53,5 +57,5 @@ export async function execute(
     .setColor(0x5865f2)
     .setFooter({ text: "Rolls are cheap, claims are scarce — spend them well." });
 
-  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  return interaction.editReply({ embeds: [embed] });
 }

@@ -37,6 +37,18 @@ resolves `drizzle/` from `process.cwd()` — correct in both the repo root and
 The `bot` compose service sits behind a `prod` profile specifically so plain
 `docker compose up -d` still starts only Postgres for local dev.
 
+**`npm run start:single` exists for low-RAM hosts** (free panel hosts like
+Wispbyte). It migrates then runs one plain process; `npm start` spawns a
+`ShardingManager` plus a shard child, which is double the memory for no benefit
+below Discord's 2,500-guild threshold.
+
+**Postgres is not optional.** `RETURNING`, `clock_timestamp()`,
+`COUNT(*) FILTER`, `array_position` and the `rarity` enum are all Postgres-only
+and sit on the atomic paths that keep claims, quotas and purchases correct.
+Hosts offering only MySQL need an external managed Postgres (Neon/Supabase/
+Aiven) — `DB_SSL=true` forces TLS and `DB_POOL_MAX` keeps the pool under free-tier
+connection caps.
+
 **Two bot applications.** The live bot uses `.env` and registers commands
 globally (up to 1h propagation). Development uses a *separate* Discord
 application via `.env.dev`, selected with `DOTENV_CONFIG_PATH` — that's what the
@@ -141,6 +153,14 @@ saying so — `/rates` advertises these as the true per-roll odds.
 
 `consumeRoll(..., count)` is all-or-nothing — a partial batch is refused rather
 than clipped.
+
+**Every command defers.** Discord kills an interaction not answered within 3
+seconds, and a cold or distant Postgres can exceed that on its own. Placement
+matters: fully-ephemeral commands defer at the top, while mixed-visibility ones
+(`/roll`, `/roll5`, `/collection`, `/flexers`, `/trade`) run their gate checks
+first and defer **publicly** only once the outcome is certainly public — so
+"you're out of rolls" stays ephemeral instead of being broadcast. After a
+`deferReply()` you must use `editReply()`; a second `reply()` throws.
 
 **Rolls are cheap, claims are scarce.** Rolls are rate-limited per hour
 (default 20); claims default to 2/hour. That split is the engagement mechanic —

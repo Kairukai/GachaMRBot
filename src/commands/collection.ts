@@ -48,6 +48,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
+  // The empty case answers ephemerally above; everything below is public.
+  await interaction.deferReply();
+
   const pages = Math.ceil(total / PAGE_SIZE);
   let page = 0;
 
@@ -96,7 +99,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         .setDisabled(disabled || page >= pages - 1),
     );
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [await render()],
     components: pages > 1 ? [nav()] : [],
   });

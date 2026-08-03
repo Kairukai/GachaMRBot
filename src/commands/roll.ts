@@ -49,7 +49,6 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
-  // would let someone with a large balance spam the channel.
   const gate = await consumeRoll(
     userId,
     guildId,
@@ -65,19 +64,21 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     return interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
   }
 
+  // Everything above answers ephemerally on failure, so the defer waits until
+  // the outcome is certainly a public card drop.
+  await interaction.deferReply();
+
   const pool = await availableRarities();
   if (pool.length === 0) {
-    return interaction.reply({
+    return interaction.editReply({
       content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
-      flags: MessageFlags.Ephemeral,
     });
   }
 
   const card = await randomCard(rollRarity(pool));
   if (!card) {
-    return interaction.reply({
+    return interaction.editReply({
       content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
-      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -111,10 +112,10 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         { name: "Shards", value: `+${payout} (you have ${balance})`, inline: true },
       )
       .setColor(0x4b5563); // muted — this isn't a win
-    return interaction.reply({ embeds: [embed] });
+    return interaction.editReply({ embeds: [embed] });
   }
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [embed],
     components: [new ActionRowBuilder<ButtonBuilder>().addComponents(claimButton(card.id))],
   });

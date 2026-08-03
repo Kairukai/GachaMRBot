@@ -34,6 +34,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
+  // The empty case answers ephemerally above; the board itself is public.
+  await interaction.deferReply();
+
   const pages = Math.ceil(members / PAGE_SIZE);
   const me = await memberRank(guildId, interaction.user.id);
   let current = 0;
@@ -81,7 +84,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         .setDisabled(disabled || current >= pages - 1),
     );
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [await render()],
     components: pages > 1 ? [nav()] : [],
   });

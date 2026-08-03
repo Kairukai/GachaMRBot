@@ -124,6 +124,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
   }
 
+  // Every check above answers ephemerally; the offer itself is public.
+  await interaction.deferReply();
+
   const [trade] = await db
     .insert(schema.trades)
     .values({
@@ -147,7 +150,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     .setFooter({ text: "Only the recipient can accept. The proposer can withdraw." })
     .addFields({ name: "Expires", value: `<t:${expiresAt}:R>`, inline: true });
 
-  await interaction.reply({
+  await interaction.editReply({
     content: `<@${receiver.id}>`,
     embeds: [embed],
     components: [tradeButtons(trade!.id)],

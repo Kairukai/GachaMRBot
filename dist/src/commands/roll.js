@@ -1,0 +1,104 @@
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, } from "discord.js";
+import { and, eq } from "drizzle-orm";
+import { db, schema } from "../db/index.js";
+import { rollRarity, RARITY_META, DUPLICATE_SHARDS, } from "../lib/gacha.js";
+import { ensureMember, consumeRoll, awardShards, } from "../lib/state.js";
+import { availableRarities, randomCard } from "../lib/pool.js";
+import { claimButton } from "../lib/claim.js";
+export const data = new SlashCommandBuilder()
+    .setName("roll")
+    .setDescription("Drop a Marvel Rivals card. First to hit Claim keeps it.")
+    .setDMPermission(false);
+function relative(d) {
+    return `<t:${Math.floor(d.getTime() / 1000)}:R>`;
+}
+export async function execute(interaction) {
+    const guildId = interaction.guildId;
+    const userId = interaction.user.id;
+    await ensureMember(userId, guildId);
+    const [settings] = await db
+        .select()
+        .from(schema.guildSettings)
+        .where(eq(schema.guildSettings.id, guildId));
+    if (settings.rollChannelId && settings.rollChannelId !== interaction.channelId) {
+        return interaction.reply({
+            content: `Rolls are restricted to <#${settings.rollChannelId}>.`,
+            flags: MessageFlags.Ephemeral,
+        });
+    }
+    const gate = await consumeRoll(userId, guildId, settings.rollCooldownSec, settings.rollsPerHour);
+    if (!gate.ok) {
+        const msg = gate.reason === "cooldown"
+            ? `Slow down — you can roll again ${relative(gate.retryAt)}.`
+            : `You're out of rolls. Refills ${relative(gate.retryAt)}, or buy more with \`/buy\`.`;
+        return interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
+    }
+    // Everything above answers ephemerally on failure, so the defer waits until
+    // the outcome is certainly a public card drop.
+    await interaction.deferReply();
+    const pool = await availableRarities();
+    if (pool.length === 0) {
+        return interaction.editReply({
+            content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
+        });
+    }
+    const card = await randomCard(rollRarity(pool));
+    if (!card) {
+        return interaction.editReply({
+            content: "No cards in the pool yet — an admin needs to run `npm run ingest`.",
+        });
+    }
+    const [existing] = await db
+        .select({ userId: schema.claims.userId })
+        .from(schema.claims)
+        .where(and(eq(schema.claims.guildId, guildId), eq(schema.claims.cardId, card.id)));
+    const meta = RARITY_META[card.rarity];
+    const embed = new EmbedBuilder()
+        .setTitle(`${meta.emoji} ${card.heroName} — ${card.name}`)
+        .setColor(meta.color)
+        .addFields({ name: "Rarity", value: meta.label, inline: true }, { name: "Role", value: card.heroRole ?? "—", inline: true })
+        .setFooter({ text: `Rolled by ${interaction.user.username}` });
+    if (card.imageUrl)
+        embed.setImage(card.imageUrl);
+    if (existing) {
+        // Already owned in this server. Showing it anyway is the point — scarcity
+        // only feels real when you can see who beat you to it. Shards are the
+        // consolation so a taken card isn't a wasted roll.
+        const payout = DUPLICATE_SHARDS[card.rarity];
+        const balance = await awardShards(userId, payout);
+        embed
+            .addFields({ name: "Owner", value: `<@${existing.userId}>`, inline: true }, { name: "Shards", value: `+${payout} (you have ${balance})`, inline: true })
+            .setColor(0x4b5563); // muted — this isn't a win
+        return interaction.editReply({ embeds: [embed] });
+    }
+    await interaction.editReply({
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(claimButton(card.id))],
+    });
+    // Cosmetic only. The button is greyed out when the window passes, but the
+    // handler in lib/claim.ts is what actually enforces expiry — if this process
+    // dies first, a late click is still correctly rejected.
+    const message = await interaction.fetchReply();
+    setTimeout(() => {
+        void (async () => {
+            const fresh = await message.fetch().catch(() => null);
+            if (!fresh || fresh.components.length === 0)
+                return;
+            const claimed = fresh.embeds[0]?.fields?.some((f) => f.name === "Claimed by");
+            if (claimed)
+                return;
+            await message
+                .edit({
+                components: [
+                    new ActionRowBuilder().addComponents(new ButtonBuilder()
+                        .setCustomId("claim:settled")
+                        .setLabel("Expired")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true)),
+                ],
+            })
+                .catch(() => { });
+        })();
+    }, settings.claimWindowSec * 1000).unref?.();
+}
+//# sourceMappingURL=roll.js.map

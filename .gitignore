@@ -1,6 +1,8 @@
 node_modules/
-dist/
 .env
 *.log
 drizzle/meta/_journal.json.bak
 .env.dev
+
+# dist/ is committed on purpose — panel hosts (Wispbyte) pull the repo and run
+# `node dist/src/start.js` directly, with no build step available on the server.

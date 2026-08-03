@@ -1,0 +1,29 @@
+import * as roll from "./roll.js";
+import * as collection from "./collection.js";
+import * as rates from "./rates.js";
+import * as help from "./help.js";
+import * as trade from "./trade.js";
+import * as sell from "./sell.js";
+import * as sellall from "./sellall.js";
+import * as flexers from "./flexers.js";
+import * as roll5 from "./roll5.js";
+import * as cdcheck from "./cdcheck.js";
+import * as showcase from "./showcase.js";
+import * as give from "./give.js";
+import * as buy from "./buy.js";
+export const commands = new Map([
+    roll,
+    roll5,
+    collection,
+    rates,
+    cdcheck,
+    showcase,
+    help,
+    trade,
+    sell,
+    sellall,
+    give,
+    buy,
+    flexers,
+].map((c) => [c.data.name, c]));
+//# sourceMappingURL=index.js.map

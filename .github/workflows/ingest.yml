@@ -1,0 +1,56 @@
+name: Refresh card pool
+
+# The wiki gains new heroes and costumes every season. The bot never calls the
+# wiki itself — it only reads Postgres — so the pool goes stale until an ingest
+# runs. This does it on a schedule instead of relying on someone remembering.
+#
+# Safe to run any time: the ingest upserts and never deletes, so existing claims
+# are untouched and re-running is a no-op when nothing has changed.
+on:
+  schedule:
+    # Mondays 03:00 UTC. Weekly is plenty — the roster moves per season.
+    - cron: "0 3 * * 1"
+  workflow_dispatch: # lets you trigger it by hand from the Actions tab
+
+concurrency:
+  # Never let two ingests write at once.
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Ingest from the Marvel Rivals wiki
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SSL: "true"
+          DB_POOL_MAX: "3"
+        run: npm run ingest
+
+      - name: Report pool size
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SSL: "true"
+        run: |
+          npx tsx -e "
+          import postgres from 'postgres';
+          const sql = postgres(process.env.DATABASE_URL, { max: 1, ssl: 'require' });
+          const rows = await sql\`SELECT rarity, count(*)::int AS n FROM cards GROUP BY rarity ORDER BY n DESC\`;
+          const [t] = await sql\`SELECT count(*)::int AS cards, (SELECT count(*)::int FROM heroes) AS heroes FROM cards\`;
+          console.log('## Card pool', '\n');
+          console.log('| Rarity | Cards |', '\n|---|---|');
+          for (const r of rows) console.log(\`| \${r.rarity} | \${r.n} |\`);
+          console.log(\`\n**\${t.cards} cards across \${t.heroes} heroes**\`);
+          await sql.end();
+          " >> $GITHUB_STEP_SUMMARY

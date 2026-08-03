@@ -203,6 +203,14 @@ tune claims, not rolls, to change how competitive a server feels.
 
 Primary source is the Marvel Rivals Fandom wiki via MediaWiki API
 (`scripts/ingest-wiki.ts`). No key, no rate-limit tier.
+
+**The pool refreshes on a schedule**, not on demand: `.github/workflows/ingest.yml`
+runs the ingest weekly against production (needs the `DATABASE_URL` repo secret,
+separate from Render's copy). GitHub Actions rather than a Render cron because
+Render's cron is paid, and an in-bot timer would be unreliable on an instance
+that restarts often. The ingest **upserts and never deletes**, so it's safe to
+run against live data — verified with 122 active claims in place. The bot itself
+never calls the wiki; a wiki outage cannot affect rolls.
 `marvelrivalsapi.com` returned 502 repeatedly during development — hence the
 demotion to fallback.
 

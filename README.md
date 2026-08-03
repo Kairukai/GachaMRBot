@@ -352,6 +352,48 @@ The bot **never** calls an external API at roll time — rolls hit Postgres only
 An upstream outage can't affect gameplay. Re-run the ingest weekly; the roster
 grows every season.
 
+### Keeping the pool up to date
+
+Marvel Rivals adds heroes and costumes every season. The bot **never calls the
+wiki** — it only reads Postgres — so the pool stays exactly as ingested until an
+ingest runs again.
+
+[`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) runs it **every
+Monday 03:00 UTC** against production, and can be triggered by hand from the
+Actions tab. It posts a summary table of the resulting pool, so a new season
+shows up as a jump in the card count.
+
+**Setup — one repo secret:**
+
+*Settings → Secrets and variables → Actions → New repository secret*
+
+```
+Name:   DATABASE_URL
+Value:  postgresql://...neon.tech/neondb?sslmode=require
+```
+
+This is separate from Render's copy of the same variable. Render's is for the
+bot; this one is for the scheduled job.
+
+**Why GitHub Actions rather than Render:** Render's Cron Jobs are a paid
+feature, and running the ingest inside the bot would spend memory and CPU on a
+small instance whose restarts make timer scheduling unreliable. A short-lived CI
+job is free, isolated, and can't take the bot down if the wiki misbehaves.
+
+**Why it's safe to run unattended:** the ingest **upserts and never deletes**.
+New cards are added, changed ones updated, nothing removed — so a card someone
+owns can never vanish from under them. Verified against live production with
+122 active claims: cards and heroes updated, claims and shards untouched.
+
+The trade-off: if the wiki *removes* a costume, it stays in the pool and remains
+rollable. Better a stale card than a broken claim.
+
+To run it manually against any database:
+
+```bash
+DATABASE_URL='postgresql://...' DB_SSL=true npm run ingest
+```
+
 ### Known data quirks
 
 These are handled, and worth knowing before you touch the ingest:

@@ -6,6 +6,9 @@ competitive claims.
 ## Commands
 
 ```bash
+npm run sim              # battle win-rate matrices
+npm run sim -- --fit 2000   # refit TUNING against the target matrices
+npm run test:unit        # pure simulator tests, no database needed
 docker compose --profile prod up -d --build   # LIVE bot + db in containers
 docker compose up -d                          # db only
 npm run dev              # DEV bot, watch mode — uses .env.dev, not .env
@@ -249,16 +252,34 @@ things (currency, shards).
 `rarity` is a Postgres enum; ordering it requires `array_position(...)`, see
 `RARITY_RANK` in `src/commands/collection.ts`.
 
+**`claims.rank` (1–10) is where card ranking lives, and that placement does all
+the work.** Rank is per-guild because ownership is; putting it on `cards` would
+leak one server's investment into every other. Because it sits on the claim row,
+every rule falls out for free: selling or burning DELETEs the row so rank dies
+and the card returns to the pool at rank 1, while trading and `/give` UPDATE
+`user_id` on the existing row so rank travels with the card. A `CHECK
+(rank BETWEEN 1 AND 10)` enforces the ladder in the database, not just in code.
+
+**`team_slots.card_id` references `cards`, NOT `claims`.** A claim row is deleted
+on every sell and burn, and cascading that into someone's saved line-up would
+silently rewrite it. Ownership is re-resolved at battle time instead
+(`resolveTeam`), and anything no longer owned drops to recruit filler.
+
+`matches.seed` is the match's own row id: insert, use the id as the seed,
+write the result back. Stable, unique, reproducible, and no clock involved, so a
+stored match replays exactly.
+
 ## Current state
 
 Live and working: `/roll` (with claim race), `/collection`, `/rates`,
 `/roll5`, `/cdcheck`, `/showcase`, `/commands`, `/trade`, `/give`, `/buy`, `/sell`, `/sellall`, `/flexers`,
+`/leaderboard`, `/rankup`, `/team`, `/challenge`,
 shard consolation for rolling an owned card, and shards spendable via `/buy`.
 
 Command logic lives in `lib/` (`claim.ts`, `trade.ts`, `sell.ts`, `give.ts`,
-`shop.ts`, `leaderboard.ts`, `pool.ts`, `state.ts`); `commands/` holds
-presentation and validation. Tests exercise `lib/` directly — that's why the
-split exists.
+`shop.ts`, `leaderboard.ts`, `pool.ts`, `state.ts`, `battle.ts`, `rankup.ts`,
+`team.ts`, `challenge.ts`); `commands/` holds presentation and validation. Tests
+exercise `lib/` directly — that's why the split exists.
 
 `/flexers` derives collection value from `SELL_VALUE` in SQL (`lib/leaderboard.ts`)
 so the leaderboard can't disagree with sell payouts. Aggregate columns come back
@@ -270,18 +291,97 @@ as strings from Postgres — they're `Number()`-cast in the mapper; don't drop t
 explicit return type and cast on `execute` are what stop TypeScript chasing that
 cycle; don't remove them.
 
-**Shards have no sink.** They accumulate and display but nothing spends them.
-The intended sink is a targeted pull (spend shards to roll a specific hero).
+**`/rankup` is now the main shard sink** — ~18k shards to take one card to rank
+10, on top of 383 fodder points and 9 Legendaries. `/buy` remains the other one.
 
 Not built: wishlist DM pings (table exists, unused), admin config commands
 (`guild_settings` is tunable only via raw SQL right now), multi-card trades
-(current flow is strictly one-for-one).
+(current flow is strictly one-for-one — ranked cards will create demand for
+bundles, since rank is only realisable through trade).
+
+**`/challenge` has no matchmaking, and that is a known gap.** Measured: a team
+at ~82% of another's stats still loses about 99% of the time, because damage and
+HP both scale so advantage compounds over an attrition fight. Equal-investment
+matches are close (that's what the SHAPE matrix is tuned for); unequal ones are
+decided. Recruits cannot fix this — buffing them enough to close the gap makes
+owning the sixth card pointless — so the fix is brackets or a roster-strength
+gate, not tuning. Until then both teams' power is shown before the fight so
+people can avoid unwinnable ones.
+
+## Ranking and burning
+
+Four roster rules, all enforced by `validateTeam` in `lib/battle.ts`: six slots
+with six **distinct heroes** (costume is irrelevant to uniqueness), at most one
+Legendary per role, at most two Epics, Rares unlimited. Note the interaction —
+3 Legendaries + 2 Epics is only five slots, so **every team runs at least one
+Rare**, and stacking Legendaries forces role diversity.
+
+Deadpool is the only hero the wiki lists as all three roles, so `team_slots`
+stores a **declared** role rather than deriving one; that declaration is what
+the Legendary-per-role cap is checked against.
+
+**The burn transaction is the delicate part** (`lib/rankup.ts`). A confirmation
+prompt is stale by the time it's clicked — rolls refresh hourly and cards move
+constantly — so nothing trusts the snapshot. One transaction; the shard spend is
+a conditional UPDATE; the fodder DELETE is scoped to the current owner and its
+returned row count must equal what was asked for; the rank UPDATE is scoped to
+the rank that was read. That count check alone defeats stale prompts, a card
+listed twice, and a double-clicked Confirm button.
+
+**Failures must THROW, not return.** Returning from inside `db.transaction`
+commits. An early version returned failure results after the shard deduction,
+which would have charged the user, deleted their fodder, and reported that
+nothing happened. `BurnAbort` exists solely to force a rollback.
+
+`spendShards` in `state.ts` runs on `db`, not a `tx` — it cannot be reused
+inside the burn or the charge would commit independently of the rollback.
+
+**Ranked cards can never be fodder**, and `/sellall` excludes them **in the
+DELETE itself**, not merely from the preview — a rank-up landing between prompt
+and click must not slip one into a bulk sale. Sell value is rarity-only, so a
+ranked card sells for exactly what an unranked one does; that keeps
+`/flexers` correct without change and makes a burn→sell money printer
+impossible, but it means selling a ranked card is a total loss. `/sell` says so.
+
+Anywhere a card changes hands must show rank (`/trade`, `/give`, autocomplete),
+or a rank-9-for-rank-1 swap looks fair.
+
+## Battle simulator
+
+`lib/battle.ts` is pure — no database, no discord.js — so it can be tuned
+offline. `npm run sim` prints win-rate matrices; `npm run sim -- --fit N` fits
+the constants in `TUNING` against target matrices.
+
+**Every constant in `TUNING` is fitted, not chosen.** Re-fit after changing any
+of them rather than nudging one number; they are heavily coupled. Things the
+fitter established that are easy to break by hand:
+
+- **`powerExponent` (~0.3) is load-bearing.** Linear power makes win rate scale
+  as power *squared*, because power buys HP and damage both — a team 1.4x
+  stronger wins 99% of the time, leaving no tunable middle.
+- **Healing is regeneration, not damage reduction.** As a fraction it was a
+  second armour stat; as a flat subtraction it made healer stacks unkillable.
+- **`focusBonus` exists** because otherwise a mixed team is strictly better than
+  a specialised one, and the fitter "solves" that by making the roles identical.
+- **`mitigationDecay` is currently 1.0, i.e. OFF.** It built the triangle before
+  regen healing and ultimates existed; don't cite it as load-bearing now.
+- Ultimates belong to Legendaries (and Epics from rank 5 at reduced potency).
+  Rank scales ult **charge rate**, not stats: a lone Legendary ults in ~46% of
+  matches at rank 1 and reliably at rank 10.
+
+**The fitter will delete your features to hit your targets.** Given modest rank
+goals it cut Focus Fire to +20% and Rally to 5% healing — every target met, every
+mechanic gone. `FLOORS` in the harness encodes design minimums so that trade-off
+surfaces as cost instead of silent removal.
 
 ## Testing
 
-`npm test` → `tests/concurrency.test.ts`, run with node:test via tsx. These are
-integration tests against a real Postgres; they need `docker compose up -d` and
-a populated card pool, and they clean up their own rows.
+`npm test` runs `tests/concurrency.test.ts`, `tests/battle.test.ts`,
+`tests/rankup.test.ts` and `tests/team.test.ts` with node:test via tsx. All but
+the battle tests are integration tests against a real Postgres; they need
+`docker compose up -d` and a populated card pool, and they clean up their own
+rows. `npm run test:unit` runs only the pure simulator tests, which need no
+database at all.
 
 Node 20's test runner only discovers `.js` files, so the script names the test
 file explicitly — **add new test files to the `test` script** or they won't run.

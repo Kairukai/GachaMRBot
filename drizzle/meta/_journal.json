@@ -43,6 +43,13 @@
       "when": 1786113658946,
       "tag": "0005_wakeful_johnny_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786114646414,
+      "tag": "0006_quiet_devos",
+      "breakpoints": true
     }
   ]
 }

@@ -24,6 +24,12 @@ const NOTES: Record<string, string> = {
   give: "One-way gift — no exchange. Asks you to confirm, then announces it publicly.",
   buy: "Rolls 💠200, claims 💠1000. Banked credits kick in after your hourly allowance.",
   flexers: "Ranked by total collection value, using the same numbers `/sell` pays.",
+  leaderboard: "Top ten by collection value, cards owned, highest rank, or cards burned.",
+  rankup:
+    "Burn spare cards and shards to rank an Epic or Legendary 1→10. Ranked cards can never be fodder, and burned cards return to the pool.",
+  team: "Six slots, six different heroes. Max one Legendary per role and two Epics; Rares unlimited. Empty slots use weak recruits.",
+  challenge:
+    "Fights their **saved** line-up, online or not — so scout with `/team view` first. 10 per hour.",
   commands: "This list.",
 };
 

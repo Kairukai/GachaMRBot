@@ -1,0 +1,77 @@
+name: Migrate production database
+
+# Manual only. Applies pending drizzle migrations to the production database
+# using the DATABASE_URL repo secret, so the Neon credential never has to be
+# handled locally or pasted anywhere.
+#
+# Render does NOT migrate on deploy: `npm start` runs dist/src/index.js, the
+# ShardingManager, which does not call the migrator. Only dist/src/start.js
+# does. So a schema change reaches production either through this workflow or
+# not at all.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "migrate" to confirm you mean the LIVE database'
+        required: true
+        default: ""
+
+concurrency:
+  # Two migrators racing on the same journal is never what anyone wants.
+  group: migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check confirmation
+        if: ${{ inputs.confirm != 'migrate' }}
+        run: |
+          echo "::error::Type 'migrate' in the confirm box to run this against production."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Show pending migrations
+        run: |
+          echo "Migration files in this commit:" >> $GITHUB_STEP_SUMMARY
+          ls drizzle/*.sql | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
+
+      # The same programmatic migrator production uses, not the drizzle-kit CLI.
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SSL: "true"
+        run: npx tsx src/migrate.ts
+
+      - name: Report schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SSL: "true"
+        run: |
+          node --input-type=module -e "
+          import postgres from 'postgres';
+          const sql = postgres(process.env.DATABASE_URL, { max: 1, ssl: 'require' });
+          const applied = await sql\`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations\`;
+          const tables = await sql\`
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' ORDER BY table_name\`;
+          const claims = await sql\`
+            SELECT count(*)::int AS total, count(*) FILTER (WHERE rank > 1)::int AS ranked
+            FROM claims\`;
+          console.log('## Migration complete', '\n');
+          console.log(\`**\${applied[0].n} migrations applied**\n\`);
+          console.log('| Table |', '\n|---|');
+          for (const t of tables) console.log(\`| \${t.table_name} |\`);
+          console.log(\`\n\${claims[0].total} claims, \${claims[0].ranked} ranked\`);
+          await sql.end();
+          " >> $GITHUB_STEP_SUMMARY

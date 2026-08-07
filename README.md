@@ -149,6 +149,12 @@ Console prints `Logged in as YourBot#1234 (1 guilds)`. Run `/roll` in Discord.
 | `/give` | Anyone | Hand a card to someone for nothing in return. Confirms first, then announces it publicly. |
 | `/trade` | Anyone | Offer one of your cards for one of theirs. Both card fields autocomplete from real inventories. Only the recipient can accept; the proposer can withdraw. Offers expire after 5 minutes. |
 | `/flexers` | Anyone | Server leaderboard, ranked by total collection value with a per-rarity breakdown. Paginated 10 at a time; the footer shows your own rank even if you're off-page. |
+| `/leaderboard [category]` | Anyone | Top ten by collection value, cards owned, highest rank, or cards burned. Shows your own standing if you're off the board. |
+| `/rankup <card>` | Anyone | Burn spare cards and shards to rank an Epic or Legendary from 1 to 10. Picks the cheapest eligible fodder for you and lists it before you confirm. Ranked cards can never be fodder. |
+| `/team set` | Anyone | Save your 6v6 line-up. Six slots, six **different heroes** — costume doesn't matter. Max one Legendary per role and two Epics; Rares unlimited. Empty slots are filled by weak recruits. |
+| `/team view [user]` | Anyone | Show a line-up with its composition and power. Rosters are public so opponents can be scouted. |
+| `/team clear` | Anyone | Delete your saved line-up. |
+| `/challenge <player>` | Anyone | Fight another player's **saved** line-up, online or not. Round-by-round log with ultimates. 10 per hour. |
 | `/commands` | Anyone | Lists every command. Built from the live registry, so it can't fall out of date. Ephemeral. |
 
 Rates shown by `/rates` are calculated from the live card pool, so they always

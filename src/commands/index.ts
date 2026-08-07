@@ -19,6 +19,8 @@ import * as give from "./give.js";
 import * as buy from "./buy.js";
 import * as rankup from "./rankup.js";
 import * as leaderboard from "./leaderboard.js";
+import * as team from "./team.js";
+import * as challenge from "./challenge.js";
 
 export interface Command {
   data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder;
@@ -45,6 +47,8 @@ export const commands = new Map<string, Command>(
       rankup,
       flexers,
       leaderboard,
+      team,
+      challenge,
     ] as unknown as Command[]
   ).map((c) => [c.data.name, c]),
 );

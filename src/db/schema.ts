@@ -67,6 +67,8 @@ export const guildSettings = pgTable("guild_settings", {
   claimsPerHour: integer("claims_per_hour").notNull().default(2),
   /** How long the Claim button stays live after a drop. */
   claimWindowSec: integer("claim_window_sec").notNull().default(30),
+  /** Challenges per hour. Battles are free but not unlimited. */
+  battlesPerHour: integer("battles_per_hour").notNull().default(10),
   /** When set, /roll only works in this channel. */
   rollChannelId: text("roll_channel_id"),
 });
@@ -96,6 +98,9 @@ export const memberState = pgTable(
      */
     bonusRolls: integer("bonus_rolls").notNull().default(0),
     bonusClaims: integer("bonus_claims").notNull().default(0),
+    /** Same hourly-window shape as rolls and claims. */
+    battlesUsed: integer("battles_used").notNull().default(0),
+    battlesResetAt: timestamp("battles_reset_at", { withTimezone: true }),
   },
   (t) => ({ pk: primaryKey({ columns: [t.userId, t.guildId] }) }),
 );
@@ -173,6 +178,71 @@ export const burns = pgTable(
   },
   (t) => ({
     byUser: index("burns_user_idx").on(t.guildId, t.userId, t.createdAt),
+  }),
+);
+
+/**
+ * A saved 6v6 line-up, one row per filled slot.
+ *
+ * `card_id` references `cards`, deliberately NOT `claims`. A claim row is
+ * deleted whenever the card is sold or burned, and cascading that into someone's
+ * team would silently rewrite their line-up. Ownership is instead re-resolved
+ * at battle time, and a card no longer owned simply drops to recruit filler.
+ *
+ * `role` is stored rather than read off the hero because the wiki lists
+ * Deadpool as all three — the player declares which one he fills, and that
+ * choice is what the one-Legendary-per-role cap is checked against.
+ */
+export const teamSlots = pgTable(
+  "team_slots",
+  {
+    guildId: text("guild_id")
+      .notNull()
+      .references(() => guildSettings.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    slot: integer("slot").notNull(),
+    cardId: text("card_id")
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // vanguard | duelist | strategist
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.guildId, t.userId, t.slot] }),
+    slotRange: check("team_slots_slot_range", sql`${t.slot} BETWEEN 1 AND 6`),
+  }),
+);
+
+/**
+ * Completed battles. Rosters are snapshotted as card ids and the RNG seed is
+ * stored, so any match can be replayed and audited exactly as it happened even
+ * after both line-ups change.
+ */
+export const matches = pgTable(
+  "matches",
+  {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id")
+      .notNull()
+      .references(() => guildSettings.id, { onDelete: "cascade" }),
+    challengerId: text("challenger_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    defenderId: text("defender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    challengerCards: text("challenger_cards").array().notNull(),
+    defenderCards: text("defender_cards").array().notNull(),
+    seed: integer("seed").notNull(),
+    winnerId: text("winner_id").notNull(),
+    rounds: integer("rounds").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    byGuild: index("matches_guild_idx").on(t.guildId, t.createdAt),
+    byChallenger: index("matches_challenger_idx").on(t.guildId, t.challengerId),
+    byDefender: index("matches_defender_idx").on(t.guildId, t.defenderId),
   }),
 );
 

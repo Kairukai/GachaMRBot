@@ -3,13 +3,27 @@ import {
   EmbedBuilder,
   MessageFlags,
   type ChatInputCommandInteraction,
+  type AutocompleteInteraction,
 } from "discord.js";
 import { eq } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { ensureGuild, ensureUser } from "../lib/state.js";
 import { resolveTeam } from "../lib/team.js";
-import { battleRecord, consumeBattle, runChallenge, teamPower } from "../lib/challenge.js";
-import { TEAM_SIZE, type Role, type RoundLog } from "../lib/battle.js";
+import {
+  battleRecord,
+  consumeBattle,
+  renderMatchEmbed,
+  runChallenge,
+  teamPower,
+} from "../lib/challenge.js";
+import { TEAM_SIZE } from "../lib/battle.js";
+import { ownedCards, cardLabel } from "../lib/trade.js";
+import {
+  CHALLENGE_TTL_MS,
+  challengeButtons,
+  createChallenge,
+  type StakeSpec,
+} from "../lib/wager.js";
 
 export const data = new SlashCommandBuilder()
   .setName("challenge")
@@ -17,29 +31,49 @@ export const data = new SlashCommandBuilder()
   .setDMPermission(false)
   .addUserOption((o) =>
     o.setName("player").setDescription("Who to challenge").setRequired(true),
+  )
+  .addIntegerOption((o) =>
+    o
+      .setName("wager_shards")
+      .setDescription("Shards each side stakes; the winner takes the pot")
+      .setMinValue(1)
+      .setRequired(false),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("stake_card")
+      .setDescription("A card of yours to put on the line")
+      .setRequired(false)
+      .setAutocomplete(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("their_card")
+      .setDescription("The card of theirs you're playing for")
+      .setRequired(false)
+      .setAutocomplete(true),
   );
 
-const ULT_NAMES: Record<Role, string> = {
-  duelist: "Focus Fire",
-  vanguard: "Bulwark",
-  strategist: "Rally",
-};
+/**
+ * Autocomplete reads the sibling `player` option to know whose cards to list,
+ * exactly as `/trade` does — `stake_card` is yours, `their_card` is theirs.
+ */
+export async function autocomplete(interaction: AutocompleteInteraction) {
+  const guildId = interaction.guildId;
+  if (!guildId) return interaction.respond([]);
+  const focused = interaction.options.getFocused(true);
 
-function ultLine(fired: Record<Role, number>): string {
-  const parts = (Object.keys(ULT_NAMES) as Role[])
-    .filter((r) => fired[r] > 0)
-    .map((r) => `${ULT_NAMES[r]}${fired[r] > 1 ? ` ×${fired[r]}` : ""}`);
-  return parts.join(", ");
-}
+  const owner =
+    focused.name === "stake_card"
+      ? interaction.user.id
+      : (interaction.options.get("player")?.value as string | undefined);
 
-function roundLine(r: RoundLog, challenger: string, defender: string): string {
-  const ults: string[] = [];
-  const a = ultLine(r.aUlts);
-  const b = ultLine(r.bUlts);
-  if (a) ults.push(`💥 ${challenger}: ${a}`);
-  if (b) ults.push(`💥 ${defender}: ${b}`);
-  const hp = `${Math.max(0, Math.round(r.aHp))} ⚔ ${Math.max(0, Math.round(r.bHp))}`;
-  return [`\`R${r.round}\` ${hp}`, ...ults].join(" · ");
+  if (!owner) return interaction.respond([{ name: "Pick the player first", value: "none" }]);
+
+  const choices = await ownedCards(guildId, owner, focused.value);
+  return interaction.respond(
+    choices.length ? choices : [{ name: "No matching cards", value: "none" }],
+  );
 }
 
 export async function execute(interaction: ChatInputCommandInteraction) {
@@ -90,6 +124,39 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   await ensureUser(challenger.id);
   await ensureUser(target.id);
 
+  const wagerShards = interaction.options.getInteger("wager_shards");
+  const stakeCard = interaction.options.getString("stake_card");
+  const theirCard = interaction.options.getString("their_card");
+  const wantsCardWager = Boolean(stakeCard || theirCard);
+
+  if (wagerShards && wantsCardWager) {
+    return interaction.reply({
+      content: "Pick one kind of stake: shards or cards, not both.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  if (wantsCardWager && (!stakeCard || !theirCard || stakeCard === "none" || theirCard === "none")) {
+    return interaction.reply({
+      content: "A card wager needs both sides: `stake_card` (yours) and `their_card` (theirs).",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const stake: StakeSpec = wagerShards
+    ? { kind: "shards", amount: wagerShards }
+    : wantsCardWager
+      ? { kind: "card", challengerCardId: stakeCard!, defenderCardId: theirCard! }
+      : { kind: "none" };
+
+  /**
+   * A friendly fight resolves now, because the defender risks nothing and so
+   * has nothing to consent to. A wagered one becomes an offer — you cannot take
+   * someone's card or shards without them agreeing.
+   */
+  if (stake.kind !== "none") {
+    return offerWager(interaction, guildId, challenger, target, stake);
+  }
+
   const quota = await consumeBattle(challenger.id, guildId, perHour);
   if (!quota.ok) {
     return interaction.reply({
@@ -102,47 +169,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   await interaction.deferReply();
 
   const outcome = await runChallenge(guildId, challenger.id, target.id);
-  const won = outcome.winnerId === challenger.id;
-
-  const myPower = teamPower(outcome.challenger.units);
-  const theirPower = teamPower(outcome.defender.units);
-
-  const log = outcome.result.rounds
-    .map((r) => roundLine(r, challenger.username, target.username))
-    .join("\n");
-
-  const mvpCard =
-    [...outcome.challenger.slots, ...outcome.defender.slots].find(
-      (s) => s.card?.cardId === outcome.result.mvp?.cardId,
-    )?.card ?? null;
-
-  const embed = new EmbedBuilder()
-    .setTitle(`${challenger.username} ⚔ ${target.username}`)
-    .setColor(won ? 0x22c55e : 0xef4444)
-    .setDescription(
-      `**${won ? challenger.username : target.username} wins** in ` +
-        `${outcome.result.rounds.length} round(s).\n\n${log}`,
-    )
-    .addFields(
-      {
-        name: challenger.username,
-        value: `Power ${myPower} · ${outcome.challenger.owned}/${TEAM_SIZE} slots`,
-        inline: true,
-      },
-      {
-        name: target.username,
-        value: `Power ${theirPower} · ${outcome.defender.owned}/${TEAM_SIZE} slots`,
-        inline: true,
-      },
-    );
-
-  if (mvpCard) {
-    embed.addFields({
-      name: "MVP",
-      value: `${mvpCard.hero} — ${mvpCard.name}${mvpCard.rank > 1 ? ` (R${mvpCard.rank})` : ""}`,
-      inline: true,
-    });
-  }
+  const embed = renderMatchEmbed(outcome, challenger.username, target.username);
 
   const record = await battleRecord(guildId, challenger.id);
   embed.setFooter({
@@ -152,4 +179,65 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   });
 
   return interaction.editReply({ embeds: [embed] });
+}
+
+/** Posts a wagered challenge for the defender to accept or decline. */
+async function offerWager(
+  interaction: ChatInputCommandInteraction,
+  guildId: string,
+  challenger: { id: string; username: string },
+  target: { id: string; username: string },
+  stake: StakeSpec,
+) {
+  await interaction.deferReply();
+
+  const created = await createChallenge(guildId, challenger.id, target.id, stake);
+  if (!created.ok) {
+    const f = created.failure;
+    const message =
+      f.code === "already_pending"
+        ? "You already have a challenge waiting on them."
+        : f.code === "stake_too_low"
+          ? "Stake at least 1 shard."
+          : f.code === "stake_not_owned"
+            ? `The ${f.who}'s staked card isn't theirs any more.`
+            : `The ${f.who} doesn't have 💠 ${f.need}.`;
+    return interaction.editReply({ content: message });
+  }
+
+  const myPower = teamPower((await resolveTeam(guildId, challenger.id)).slots.map((s) => s.unit));
+  const theirPower = teamPower((await resolveTeam(guildId, target.id)).slots.map((s) => s.unit));
+
+  const stakeText =
+    stake.kind === "none"
+      ? "No stake."
+      : stake.kind === "shards"
+      ? `Both stake **💠 ${stake.amount}**. Winner takes the pot.`
+      : [
+          `**${await cardLabel(stake.challengerCardId, guildId)}**`,
+          "against",
+          `**${await cardLabel(stake.defenderCardId, guildId)}**`,
+          "Winner takes the loser's card — rank and all.",
+        ].join("\n");
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${challenger.username} challenges ${target.username}`)
+    .setColor(0xf59e0b)
+    .setDescription(`<@${target.id}>, a wager is on the table.
+
+${stakeText}`)
+    .addFields(
+      { name: challenger.username, value: `Power ${myPower}`, inline: true },
+      { name: target.username, value: `Power ${theirPower}`, inline: true },
+    )
+    .setFooter({
+      text:
+        "Only the challenged player can accept; the challenger can withdraw. " +
+        `Expires in ${Math.round(CHALLENGE_TTL_MS / 60000)} minutes. Stakes are checked again when accepted.`,
+    });
+
+  return interaction.editReply({
+    embeds: [embed],
+    components: [challengeButtons(created.challengeId)],
+  });
 }

@@ -155,6 +155,8 @@ Console prints `Logged in as YourBot#1234 (1 guilds)`. Run `/roll` in Discord.
 | `/team view [user]` | Anyone | Show a line-up with its composition and power. Rosters are public so opponents can be scouted. |
 | `/team clear` | Anyone | Delete your saved line-up. |
 | `/challenge <player>` | Anyone | Fight another player's **saved** line-up, online or not. Round-by-round log with ultimates. 10 per hour. |
+| `/challenge <player> wager_shards:<n>` | Anyone | Same fight with both sides staking shards; the winner takes the pot. Becomes an offer the other player must accept. |
+| `/challenge <player> stake_card:<yours> their_card:<theirs>` | Anyone | Play a card of yours against one of theirs. The winner takes the loser's card, rank included. Also requires acceptance. |
 | `/commands` | Anyone | Lists every command. Built from the live registry, so it can't fall out of date. Ephemeral. |
 
 Rates shown by `/rates` are calculated from the live card pool, so they always

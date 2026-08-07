@@ -246,6 +246,62 @@ export const matches = pgTable(
   }),
 );
 
+export const wagerKind = pgEnum("wager_kind", ["none", "shards", "card"]);
+
+export const challengeStatus = pgEnum("challenge_status", [
+  "pending",
+  "accepted",
+  "declined",
+  "cancelled",
+]);
+
+/**
+ * A wagered challenge awaiting the defender's answer.
+ *
+ * Friendly challenges never land here — they resolve instantly, because the
+ * defender risks nothing and so has nothing to consent to. The moment a stake
+ * exists that stops being true: taking someone's card or shards without their
+ * agreement is not a game mechanic, it's theft. So wagered fights get the same
+ * accept/decline handshake as `/trade`.
+ *
+ * Stakes are deliberately NOT escrowed. Locking a card for the life of an offer
+ * is what `executeSwap` avoids and for the same reasons — it deadlocks and it
+ * stops a card appearing in more than one offer. Both stakes are instead
+ * re-validated inside the settlement transaction, so an offer whose stake was
+ * spent or traded away simply fails cleanly.
+ */
+export const challenges = pgTable(
+  "challenges",
+  {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id")
+      .notNull()
+      .references(() => guildSettings.id, { onDelete: "cascade" }),
+    challengerId: text("challenger_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    defenderId: text("defender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    wager: wagerKind("wager").notNull().default("none"),
+    /** Each side stakes this much; the winner takes the loser's half. */
+    stakeShards: integer("stake_shards").notNull().default(0),
+    challengerCardId: text("challenger_card_id").references(() => cards.id, {
+      onDelete: "cascade",
+    }),
+    defenderCardId: text("defender_card_id").references(() => cards.id, {
+      onDelete: "cascade",
+    }),
+    status: challengeStatus("status").notNull().default("pending"),
+    /** Set once fought, so a settled offer points at its result. */
+    matchId: integer("match_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    byDefender: index("challenges_defender_idx").on(t.guildId, t.defenderId, t.status),
+  }),
+);
+
 export const tradeStatus = pgEnum("trade_status", [
   "pending",
   "accepted",

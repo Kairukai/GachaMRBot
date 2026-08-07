@@ -267,7 +267,11 @@ silently rewrite it. Ownership is re-resolved at battle time instead
 
 `matches.seed` is the match's own row id: insert, use the id as the seed,
 write the result back. Stable, unique, reproducible, and no clock involved, so a
-stored match replays exactly.
+stored match replays exactly. `runChallenge` takes an optional transaction so a
+wagered fight and its payout commit together.
+
+`challenges` holds only PENDING wagered offers awaiting an answer; friendly
+fights never touch it and go straight to `matches`.
 
 ## Current state
 
@@ -278,7 +282,8 @@ shard consolation for rolling an owned card, and shards spendable via `/buy`.
 
 Command logic lives in `lib/` (`claim.ts`, `trade.ts`, `sell.ts`, `give.ts`,
 `shop.ts`, `leaderboard.ts`, `pool.ts`, `state.ts`, `battle.ts`, `rankup.ts`,
-`team.ts`, `challenge.ts`); `commands/` holds presentation and validation. Tests
+`team.ts`, `challenge.ts`, `wager.ts`); `commands/` holds presentation and
+validation. Tests
 exercise `lib/` directly — that's why the split exists.
 
 `/flexers` derives collection value from `SELL_VALUE` in SQL (`lib/leaderboard.ts`)
@@ -298,6 +303,28 @@ Not built: wishlist DM pings (table exists, unused), admin config commands
 (`guild_settings` is tunable only via raw SQL right now), multi-card trades
 (current flow is strictly one-for-one — ranked cards will create demand for
 bundles, since rank is only realisable through trade).
+
+**A stake changes the interaction model, and that is the whole reason
+`lib/wager.ts` exists.** A friendly `/challenge` resolves instantly because the
+defender risks nothing and so has nothing to consent to. The moment shards or a
+card are on the line that stops being true — taking someone's property without
+their agreement is not a mechanic — so a wagered challenge becomes an offer with
+the same accept/decline handshake, 5-minute expiry and withdraw rule as
+`/trade`. Don't "simplify" wagers back onto the instant path.
+
+**Stakes are not escrowed.** Holding a card for the life of an offer is exactly
+what `executeSwap` avoids: it deadlocks and it stops a card sitting in more than
+one offer. Both stakes are re-validated inside the settlement transaction
+instead, which covers validation, the fight, the transfer and the record in one
+unit — the simulator is pure, so running it inside a transaction is free and
+means a recorded match can never exist without its payout. Failures throw
+`SettleAbort`; returning would commit half a wager.
+
+Shard wagers are **zero-sum between the two players**, so unlike `/buy` and
+`/rankup` they mint nothing and drain nothing. There is deliberately no house
+rake. Note `users.shards` is cross-guild while cards are per-guild, so a shard
+wager moves global currency on a guild-local result — same leak `/sell` already
+has.
 
 **`/challenge` has no matchmaking, and that is a known gap.** Measured: a team
 at ~82% of another's stats still loses about 99% of the time, because damage and
@@ -377,7 +404,8 @@ surfaces as cost instead of silent removal.
 ## Testing
 
 `npm test` runs `tests/concurrency.test.ts`, `tests/battle.test.ts`,
-`tests/rankup.test.ts` and `tests/team.test.ts` with node:test via tsx. All but
+`tests/rankup.test.ts`, `tests/team.test.ts` and `tests/wager.test.ts` with
+node:test via tsx. All but
 the battle tests are integration tests against a real Postgres; they need
 `docker compose up -d` and a populated card pool, and they clean up their own
 rows. `npm run test:unit` runs only the pure simulator tests, which need no

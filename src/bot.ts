@@ -7,6 +7,7 @@ import { handleSellButton, SELL_PREFIX } from "./lib/sell.js";
 import { handleGiveButton, GIVE_PREFIX } from "./lib/give.js";
 import { handleBuyButton, BUY_PREFIX } from "./lib/shop.js";
 import { handleRankUpButton, RANKUP_PREFIX } from "./lib/rankup.js";
+import { handleChallengeButton, CHALLENGE_PREFIX } from "./lib/wager.js";
 import { startHealthServer } from "./lib/health.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -70,7 +71,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
               ? handleBuyButton
               : id.startsWith(RANKUP_PREFIX)
                 ? handleRankUpButton
-                : null;
+                : id.startsWith(CHALLENGE_PREFIX)
+                  ? handleChallengeButton
+                  : null;
     if (!handler) return;
     try {
       await handler(interaction);

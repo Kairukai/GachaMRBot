@@ -23,6 +23,15 @@ export const ROLES: readonly Role[] = ["vanguard", "duelist", "strategist"];
  * A recruit is the filler for a slot the player can't field: role-less, cheap,
  * and deliberately unable to contribute mitigation or healing, so a short
  * roster can never buy a balanced composition for free.
+ *
+ * Recruits CANNOT make a short roster competitive, and tuning them is not the
+ * lever to try. Measured: four Rares plus two recruits reaches ~82% of a full
+ * six-Rare team's HP and ~91% of its damage, and still loses about 99% of the
+ * time. The win function is steep in team stats because damage and HP compound
+ * over an attrition fight — closing that gap needs recruits at ~97% of a real
+ * card, which makes owning the sixth card pointless. Equal-stat matchups stay
+ * close (see the SHAPE matrix); unequal-stat ones are decided. The fix for a
+ * four-card newcomer is matchmaking, not stronger filler.
  */
 export interface Unit {
   cardId: string;
@@ -30,11 +39,27 @@ export interface Unit {
   heroId: string;
   rarity: Rarity | "recruit";
   role: Role | null;
+  /**
+   * 1..10, Epics and Legendaries only. Lives on the claim row, so it is lost
+   * the moment ownership ends — sold, burned as fodder, anything that deletes
+   * the claim. Trades keep it, because a trade updates `user_id` on the
+   * existing row rather than recreating it. Absent means 1.
+   */
+  rank?: number;
 }
 
 export const TEAM_SIZE = 6;
 export const MAX_EPICS = 2;
 export const MAX_LEGENDARY_PER_ROLE = 1;
+export const MAX_RANK = 10;
+
+/** Rares are never rankable, so this is the set that can exceed rank 1. */
+const RANKABLE: ReadonlySet<string> = new Set(["epic", "legendary"]);
+
+function clampRank(rank: number | undefined): number {
+  if (!rank || rank < 1) return 1;
+  return rank > MAX_RANK ? MAX_RANK : rank;
+}
 
 export const TUNING = {
   /**
@@ -48,10 +73,10 @@ export const TUNING = {
   power: {
     default: 5,
     rare: 10,
-    epic: 11.0,
-    legendary: 15.898,
+    epic: 11.078,
+    legendary: 12.0,
     mythic: 34,
-    recruit: 3,
+    recruit: 8,
   } as Record<Rarity | "recruit", number>,
 
   /**
@@ -62,10 +87,10 @@ export const TUNING = {
    * anything here rather than nudging one number.
    */
   roles: {
-    vanguard: { hp: 1.052, dmg: 0.623, heal: 0, mit: 0.747 },
-    duelist: { hp: 0.637, dmg: 1.001, heal: 0, mit: 0.21 },
-    strategist: { hp: 0.948, dmg: 0.616, heal: 0.24, mit: 0.2 },
-    recruit: { hp: 0.6, dmg: 0.15, heal: 0, mit: 0 },
+    vanguard: { hp: 1.052, dmg: 0.618, heal: 0, mit: 0.75 },
+    duelist: { hp: 0.638, dmg: 0.995, heal: 0, mit: 0.256 },
+    strategist: { hp: 0.955, dmg: 0.625, heal: 0.243, mit: 0.165 },
+    recruit: { hp: 0.55, dmg: 0.45, heal: 0, mit: 0 },
   } as Record<Role | "recruit", { hp: number; dmg: number; heal: number; mit: number }>,
 
   /**
@@ -73,17 +98,21 @@ export const TUNING = {
    * armour. Linear mitigation would let six Vanguards reach 100% reduction and
    * become literally unkillable.
    */
-  mitigationK: 33.802,
+  mitigationK: 30.663,
 
   /**
-   * Mitigation multiplier per round elapsed — armour breaks down as a fight
-   * drags on. This is what creates the rock-paper-scissors triangle, and the
-   * first version had no equivalent: without it a wall beats both burst AND
-   * sustain, because sustain can never out-attrition raw effective HP. Decay
-   * makes the wall a *short-game* answer, so burst loses to it and sustain
-   * outlasts it.
+   * Mitigation multiplier per round elapsed — armour breaking down as a fight
+   * drags on.
+   *
+   * Currently 1.0, i.e. OFF. It was introduced to build the rock-paper-scissors
+   * triangle back when a wall beat both burst and sustain, and it did that job.
+   * Once healing became regeneration and focus bonuses and ultimates arrived,
+   * the fitter pushed it to 1.0 every run: those mechanics now carry the
+   * triangle on their own. Kept because Bulwark still refreshes armour and the
+   * knob is one re-fit away from mattering again — but don't cite it as load
+   * bearing, because at this value it does nothing.
    */
-  mitigationDecay: 0.987,
+  mitigationDecay: 1.0,
 
   /**
    * Damage multiplier per round elapsed. Guarantees every match terminates in
@@ -93,13 +122,13 @@ export const TUNING = {
   escalation: 1.2,
 
   /** Per-round damage jitter, ±this fraction. The upset knob. */
-  variance: 0.264,
+  variance: 0.35,
 
   /** Backstop only. With escalation on, real matches end long before this. */
   maxRounds: 15,
 
   /** Scales HP against damage, i.e. how many rounds a typical fight lasts. */
-  hpScale: 3.559,
+  hpScale: 3.731,
 
   /**
    * Each card's power is raised to this exponent before becoming stats.
@@ -112,7 +141,7 @@ export const TUNING = {
    * hit the progression targets. Flattening the curve is what makes a
    * collection advantage tunable at all.
    */
-  powerExponent: 0.302,
+  powerExponent: 0.295,
 
   /**
    * Stacking a role amplifies its signature stat — damage for Duelists,
@@ -125,7 +154,7 @@ export const TUNING = {
    * converged on making the three roles nearly identical instead. Focus is
    * what buys a stacked team something a balanced team can't have.
    */
-  focusBonus: 0.198,
+  focusBonus: 0.197,
 
   /**
    * Defender HP bonus. `/battle` resolves against a saved, visible roster, so
@@ -151,17 +180,46 @@ export const TUNING = {
    */
   ult: {
     /** Meter gained per round before bonuses. 1.0 fires the ultimate. */
-    chargeBase: 0.259,
+    chargeBase: 0.245,
     /** Random bonus as a fraction of base, ± per round. Bounded on purpose. */
-    chargeJitter: 0.578,
+    chargeJitter: 0.308,
     /** Extra charge per 1.0 of max HP lost in the previous round. */
-    chargeFromDamage: 0.293,
+    chargeFromDamage: 0.36,
     /** Focus Fire — burst that ignores armour entirely. */
-    duelist: { damageMultiplier: 2.164 },
+    duelist: { damageMultiplier: 1.802 },
     /** Bulwark — near-immunity for a round, and armour decay resets. */
-    vanguard: { incomingMultiplier: 0.388 },
+    vanguard: { incomingMultiplier: 0.494 },
     /** Rally — immediate heal for a fraction of max HP. */
-    strategist: { healFraction: 0.229 },
+    strategist: { healFraction: 0.152 },
+  },
+
+  /**
+   * Ranking, 1..10, Epics and Legendaries only.
+   *
+   * `statBonus` is applied AFTER powerExponent, straight to the stat. Applying
+   * it to power instead would be crushed by the 0.302 exponent — x1.25 power
+   * is only +7% stats — so the number shown to a player would bear no relation
+   * to the effect. Post-exponent, +12% means +12%.
+   *
+   * The real payload is `chargeBonus`. A lone Legendary lands its ultimate in
+   * only ~46% of matches at rank 1; scaling charge rate turns investment into
+   * reliability, which is a progression curve players can feel without
+   * touching the stat maths that took so long to balance.
+   */
+  rank: {
+    /** Extra stat fraction at rank 10, ramped linearly from rank 1. */
+    statBonus: 0.08,
+    /** Extra ultimate charge rate at rank 10, ramped linearly. */
+    chargeBonus: 0.517,
+    /**
+     * Epics unlock a weakened ultimate at this rank. Without it an Epic is a
+     * Rare with 3% more stats and no reason to exist — this makes the middle
+     * tier the accessible progression track, reachable with no Legendary
+     * fodder at all.
+     */
+    epicUltRank: 5,
+    /** Potency of an Epic's ultimate relative to a Legendary's. */
+    epicPotency: 0.354,
   },
 };
 
@@ -174,13 +232,19 @@ export interface TeamStats {
   mit: number;
 }
 
+/** Applied after powerExponent, so the bonus a player is shown is the real one. */
+function rankStatMult(u: Unit, t: Tuning): number {
+  if (!RANKABLE.has(u.rarity)) return 1;
+  return 1 + (t.rank.statBonus * (clampRank(u.rank) - 1)) / (MAX_RANK - 1);
+}
+
 export function teamStats(team: readonly Unit[], t: Tuning = TUNING): TeamStats {
   let hp = 0;
   let dmg = 0;
   let heal = 0;
   let mit = 0;
   for (const u of team) {
-    const p = (t.power[u.rarity] ?? 0) ** t.powerExponent;
+    const p = (t.power[u.rarity] ?? 0) ** t.powerExponent * rankStatMult(u, t);
     const w = t.roles[u.role ?? "recruit"];
     hp += p * w.hp;
     dmg += p * w.dmg;
@@ -209,7 +273,9 @@ export type TeamViolation =
   | { code: "size"; have: number }
   | { code: "duplicate_hero"; heroId: string }
   | { code: "epic_cap"; have: number }
-  | { code: "legendary_role_cap"; role: Role; have: number };
+  | { code: "legendary_role_cap"; role: Role; have: number }
+  | { code: "rank_out_of_range"; cardId: string; rank: number }
+  | { code: "rank_not_rankable"; cardId: string; rarity: string };
 
 /**
  * The four roster rules:
@@ -240,6 +306,18 @@ export function validateTeam(team: readonly Unit[]): TeamViolation[] {
     const n = real.filter((u) => u.rarity === "legendary" && u.role === role).length;
     if (n > MAX_LEGENDARY_PER_ROLE) {
       out.push({ code: "legendary_role_cap", role, have: n });
+    }
+  }
+
+  // Rank is a data invariant rather than a roster choice, but it is checked
+  // here too: a ranked Rare means a burn wrote somewhere it shouldn't have,
+  // and silently clamping it would hide the bug behind a working battle.
+  for (const u of real) {
+    if (u.rank === undefined) continue;
+    if (!Number.isInteger(u.rank) || u.rank < 1 || u.rank > MAX_RANK) {
+      out.push({ code: "rank_out_of_range", cardId: u.cardId, rank: u.rank });
+    } else if (u.rank > 1 && !RANKABLE.has(u.rarity)) {
+      out.push({ code: "rank_not_rankable", cardId: u.cardId, rarity: u.rarity });
     }
   }
 
@@ -335,14 +413,38 @@ function strike(
 interface UltState {
   role: Role;
   charge: number;
+  /** Per-round charge, scaled by rank. */
+  rate: number;
+  /** 1 for a Legendary, `rank.epicPotency` for a ranked-up Epic. */
+  potency: number;
 }
 
-function ultsFor(team: readonly Unit[]): UltState[] {
+/**
+ * Builds the ultimate meters for a team.
+ *
+ * Legendaries always have one. Epics get a weakened version once ranked to
+ * `epicUltRank`. Rares never do — which is what keeps the roster caps
+ * meaningful, since only five of six slots can ever hold an ability.
+ */
+function ultsFor(team: readonly Unit[], t: Tuning): UltState[] {
   const out: UltState[] = [];
   for (const u of team) {
-    if (u.rarity === "legendary" && u.role) out.push({ role: u.role, charge: 0 });
+    if (!u.role) continue;
+    const rank = clampRank(u.rank);
+    let potency: number;
+    if (u.rarity === "legendary") potency = 1;
+    else if (u.rarity === "epic" && rank >= t.rank.epicUltRank) potency = t.rank.epicPotency;
+    else continue;
+    const rate = t.ult.chargeBase * (1 + (t.rank.chargeBonus * (rank - 1)) / (MAX_RANK - 1));
+    out.push({ role: u.role, charge: 0, rate, potency });
   }
   return out;
+}
+
+/** One ultimate going off, with how strong this instance is. */
+interface Fired {
+  role: Role;
+  potency: number;
 }
 
 /**
@@ -355,17 +457,59 @@ function advanceUlts(
   hpLostFraction: number,
   roll: () => number,
   t: Tuning,
-): UltsFired {
-  const fired: UltsFired = { vanguard: 0, duelist: 0, strategist: 0 };
+): Fired[] {
+  const fired: Fired[] = [];
   for (const u of ults) {
     const jitter = 1 + (roll() * 2 - 1) * t.ult.chargeJitter;
-    u.charge += t.ult.chargeBase * jitter + hpLostFraction * t.ult.chargeFromDamage;
+    u.charge += u.rate * jitter + hpLostFraction * t.ult.chargeFromDamage;
     if (u.charge >= 1) {
       u.charge -= 1;
-      fired[u.role]++;
+      fired.push({ role: u.role, potency: u.potency });
     }
   }
   return fired;
+}
+
+function countByRole(fired: readonly Fired[]): UltsFired {
+  const out: UltsFired = { vanguard: 0, duelist: 0, strategist: 0 };
+  for (const f of fired) out[f.role]++;
+  return out;
+}
+
+/** Focus Fire damage, scaled by potency and stacking across multiple Duelists. */
+function focusFireMultiplier(fired: readonly Fired[], t: Tuning): number {
+  let mult = 1;
+  for (const f of fired) {
+    if (f.role === "duelist") mult += (t.ult.duelist.damageMultiplier - 1) * f.potency;
+  }
+  return mult;
+}
+
+/**
+ * Armour-piercing is the Legendary half of Focus Fire. A ranked Epic gets the
+ * damage spike but not the pierce, so the full-strength version stays
+ * distinctly better rather than merely larger.
+ */
+function piercesArmour(fired: readonly Fired[]): boolean {
+  return fired.some((f) => f.role === "duelist" && f.potency >= 1);
+}
+
+/** Bulwark, compounding if more than one Vanguard pops in the same round. */
+function bulwarkMultiplier(fired: readonly Fired[], t: Tuning): number {
+  let mult = 1;
+  for (const f of fired) {
+    if (f.role === "vanguard") mult *= 1 - (1 - t.ult.vanguard.incomingMultiplier) * f.potency;
+  }
+  return mult;
+}
+
+/** Rally, as a fraction of max HP. */
+function rallyFraction(fired: readonly Fired[], t: Tuning): number {
+  let total = 0;
+  for (const f of fired) {
+    if (f.role === "strategist") total += t.ult.strategist.healFraction * f.potency;
+  }
+  return total;
 }
 
 /**
@@ -399,8 +543,8 @@ export function simulate(
 
   let winner: "a" | "b" | null = null;
 
-  const ultsA = ultsFor(a);
-  const ultsB = ultsFor(b);
+  const ultsA = ultsFor(a, t);
+  const ultsB = ultsFor(b, t);
   // Rounds since each side's armour was last refreshed. Bulwark resets it.
   let armourRoundA = 1;
   let armourRoundB = 1;
@@ -414,25 +558,23 @@ export function simulate(
 
     // Rally resolves before the exchange, so it can save a team that would
     // otherwise die this round.
-    if (firedA.strategist > 0) {
-      hpA = Math.min(maxA, hpA + maxA * t.ult.strategist.healFraction * firedA.strategist);
-    }
-    if (firedB.strategist > 0) {
-      hpB = Math.min(maxB, hpB + maxB * t.ult.strategist.healFraction * firedB.strategist);
-    }
+    const rallyA = rallyFraction(firedA, t);
+    const rallyB = rallyFraction(firedB, t);
+    if (rallyA > 0) hpA = Math.min(maxA, hpA + maxA * rallyA);
+    if (rallyB > 0) hpB = Math.min(maxB, hpB + maxB * rallyB);
 
-    if (firedA.vanguard > 0) armourRoundA = 1;
-    if (firedB.vanguard > 0) armourRoundB = 1;
+    if (firedA.some((f) => f.role === "vanguard")) armourRoundA = 1;
+    if (firedB.some((f) => f.role === "vanguard")) armourRoundB = 1;
 
     const modsA: StrikeMods = {
-      damageMultiplier: 1 + firedA.duelist * (t.ult.duelist.damageMultiplier - 1),
-      pierce: firedA.duelist > 0,
-      incomingMultiplier: firedB.vanguard > 0 ? t.ult.vanguard.incomingMultiplier : 1,
+      damageMultiplier: focusFireMultiplier(firedA, t),
+      pierce: piercesArmour(firedA),
+      incomingMultiplier: bulwarkMultiplier(firedB, t),
     };
     const modsB: StrikeMods = {
-      damageMultiplier: 1 + firedB.duelist * (t.ult.duelist.damageMultiplier - 1),
-      pierce: firedB.duelist > 0,
-      incomingMultiplier: firedA.vanguard > 0 ? t.ult.vanguard.incomingMultiplier : 1,
+      damageMultiplier: focusFireMultiplier(firedB, t),
+      pierce: piercesArmour(firedB),
+      incomingMultiplier: bulwarkMultiplier(firedA, t),
     };
 
     const fromA = strike(statsA, statsB, round, armourRoundB, modsA, roll, t);
@@ -474,8 +616,8 @@ export function simulate(
       bDealt: fromB.net,
       aHp: hpA,
       bHp: hpB,
-      aUlts: firedA,
-      bUlts: firedB,
+      aUlts: countByRole(firedA),
+      bUlts: countByRole(firedB),
     });
 
     if (hpA <= 0 || hpB <= 0) {

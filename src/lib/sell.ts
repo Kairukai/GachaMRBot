@@ -37,13 +37,20 @@ function settledRow(label: string) {
   );
 }
 
-/** Cards the user owns in this guild at a given rarity, for previews. */
+/**
+ * Cards the user owns in this guild at a given rarity, for previews.
+ *
+ * Returns rank so callers can separate ranked cards out. A bulk sell must never
+ * silently destroy one: rank is worth weeks of claim quota and pays nothing
+ * extra, because sell value is rarity-only.
+ */
 export async function ownedAtRarity(guildId: string, userId: string, rarity: SellRarity) {
   return db
     .select({
       id: schema.cards.id,
       name: schema.cards.name,
       hero: schema.heroes.name,
+      rank: schema.claims.rank,
     })
     .from(schema.claims)
     .innerJoin(schema.cards, eq(schema.claims.cardId, schema.cards.id))
@@ -102,9 +109,15 @@ export async function sellOne(
 }
 
 /**
- * Bulk sell every card of one rarity. Payout is derived from the rows actually
- * deleted, not from a count taken when the prompt was built — otherwise a trade
- * completing in between would pay for cards the user no longer owns.
+ * Bulk sell every UNRANKED card of one rarity. Payout is derived from the rows
+ * actually deleted, not from a count taken when the prompt was built —
+ * otherwise a trade completing in between would pay for cards the user no
+ * longer owns.
+ *
+ * Ranked cards are excluded in the DELETE itself, not merely filtered out of
+ * the preview: a rank-up landing between prompt and click must not slip a card
+ * into the sale. Selling one is still possible through `/sell`, which names it
+ * and its rank individually.
  */
 export async function sellAll(
   guildId: string,
@@ -118,6 +131,7 @@ export async function sellAll(
         and(
           eq(schema.claims.guildId, guildId),
           eq(schema.claims.userId, userId),
+          eq(schema.claims.rank, 1),
           sql`${schema.claims.cardId} IN (SELECT id FROM cards WHERE rarity = ${rarity})`,
         ),
       )

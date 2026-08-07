@@ -15,6 +15,7 @@ import {
   seededRng,
   TUNING,
   TEAM_SIZE,
+  MAX_RANK,
   type Role,
   type Unit,
 } from "../src/lib/battle.js";
@@ -276,6 +277,80 @@ test("taking damage accelerates ultimate charge", () => {
     earlierUnderPressure > 40,
     `charge-from-damage barely registers: ${earlierUnderPressure}/60`,
   );
+});
+
+/* ------------------------------------------------------------------ rank */
+
+test("rank raises stats by the advertised amount, post-exponent", () => {
+  const base = teamStats([card("legendary", "duelist")]);
+  const maxed = teamStats([{ ...card("legendary", "duelist"), rank: MAX_RANK }]);
+  const gain = maxed.dmg / base.dmg - 1;
+  // The bonus is applied after powerExponent precisely so the number a player
+  // is shown is the number that lands. Applied to power it would be crushed to
+  // roughly a third of this.
+  assert.ok(
+    Math.abs(gain - TUNING.rank.statBonus) < 1e-9,
+    `rank 10 gave ${gain}, expected ${TUNING.rank.statBonus}`,
+  );
+});
+
+test("Rares never gain stats from a rank value", () => {
+  const base = teamStats([card("rare", "duelist")]);
+  const bogus = teamStats([{ ...card("rare", "duelist"), rank: MAX_RANK }]);
+  assert.equal(bogus.dmg, base.dmg);
+});
+
+test("rank makes a lone Legendary's ultimate reliable", () => {
+  const build = (rank: number) => [
+    { ...card("legendary", "duelist"), rank },
+    ...Array.from({ length: 5 }, () => card("rare", "duelist")),
+  ];
+  const rate = (rank: number) => {
+    let fired = 0;
+    for (let seed = 1; seed <= 400; seed++) {
+      if (ultCount(simulate(build(rank), balanced(), seed).rounds) > 0) fired++;
+    }
+    return fired / 400;
+  };
+  const low = rate(1);
+  const high = rate(MAX_RANK);
+  // The whole point of paying charge rate rather than raw stats: investment
+  // converts a situational card into a dependable one.
+  assert.ok(high > low + 0.15, `rank 1 ${low} vs rank 10 ${high} — charge bonus is invisible`);
+});
+
+test("an Epic gains an ultimate at the unlock rank and not before", () => {
+  const build = (rank: number) => [
+    { ...card("epic", "duelist"), rank },
+    ...Array.from({ length: 5 }, () => card("rare", "duelist")),
+  ];
+  const below = TUNING.rank.epicUltRank - 1;
+  let firedBelow = 0;
+  for (let seed = 1; seed <= 200; seed++) {
+    firedBelow += ultCount(simulate(build(below), balanced(), seed).rounds);
+  }
+  assert.equal(firedBelow, 0, `Epic ulted at rank ${below}`);
+
+  let firedAt = 0;
+  for (let seed = 1; seed <= 200; seed++) {
+    if (ultCount(simulate(build(TUNING.rank.epicUltRank), balanced(), seed).rounds) > 0) firedAt++;
+  }
+  assert.ok(firedAt > 0, "Epic never ulted at the unlock rank");
+});
+
+test("a ranked Rare is rejected, a ranked Epic is not", () => {
+  const badRare = [{ ...card("rare", "duelist"), rank: 4 }];
+  assert.deepEqual(validateTeam(badRare), [
+    { code: "rank_not_rankable", cardId: badRare[0]!.cardId, rarity: "rare" },
+  ]);
+  assert.deepEqual(validateTeam([{ ...card("epic", "duelist"), rank: 4 }]), []);
+});
+
+test("an out-of-range rank is rejected", () => {
+  const over = [{ ...card("legendary", "duelist"), rank: 11 }];
+  assert.deepEqual(validateTeam(over), [
+    { code: "rank_out_of_range", cardId: over[0]!.cardId, rank: 11 },
+  ]);
 });
 
 /* ------------------------------------------------------------------- mvp */

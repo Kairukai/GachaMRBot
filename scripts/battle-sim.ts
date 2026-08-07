@@ -41,13 +41,14 @@ const FIT = (() => {
 type Tier = "rare" | "epic" | "legendary" | "recruit";
 
 let uid = 0;
-function unit(rarity: Tier, role: Role | null): Unit {
+function unit(rarity: Tier, role: Role | null, rank = 1): Unit {
   uid++;
   return {
     cardId: `${rarity}:${role ?? "none"}:${uid}`,
     heroId: rarity === "recruit" ? "" : `hero${uid}`,
     rarity,
     role: rarity === "recruit" ? null : role,
+    rank: rarity === "epic" || rarity === "legendary" ? rank : 1,
   };
 }
 
@@ -64,13 +65,37 @@ function mono(role: Role): Unit[] {
 }
 
 /** Ceiling team: 3 Legendaries is only reachable with all three roles. */
-function balanced(): Unit[] {
+function balanced(rank = 1): Unit[] {
   return [
-    unit("legendary", "vanguard"),
-    unit("legendary", "duelist"),
-    unit("legendary", "strategist"),
+    unit("legendary", "vanguard", rank),
+    unit("legendary", "duelist", rank),
+    unit("legendary", "strategist", rank),
+    unit("epic", "vanguard", rank),
+    unit("epic", "duelist", rank),
+    unit("rare", "strategist"),
+  ];
+}
+
+/** One Legendary at a given rank, everything else fixed — isolates rank. */
+function legendaryAt(rank: number): Unit[] {
+  return [
+    unit("legendary", "duelist", rank),
     unit("epic", "vanguard"),
-    unit("epic", "duelist"),
+    unit("epic", "strategist"),
+    unit("rare", "vanguard"),
+    unit("rare", "duelist"),
+    unit("rare", "strategist"),
+  ];
+}
+
+/** Two Epics at a given rank — the no-Legendary progression track. */
+function epicsAt(rank: number): Unit[] {
+  return [
+    unit("epic", "duelist", rank),
+    unit("epic", "vanguard", rank),
+    unit("rare", "vanguard"),
+    unit("rare", "duelist"),
+    unit("rare", "strategist"),
     unit("rare", "strategist"),
   ];
 }
@@ -126,7 +151,7 @@ const SHAPES: Archetype[] = [
  * is still playable rather than hopeless.
  */
 const PROGRESSION: Archetype[] = [
-  { name: "ceiling 2-2-2", build: balanced },
+  { name: "ceiling 2-2-2", build: () => balanced(1) },
   { name: "best mono Duel", build: () => mono("duelist") },
   { name: "best mono Vang", build: () => mono("vanguard") },
   { name: "best mono Strat", build: () => mono("strategist") },
@@ -134,7 +159,21 @@ const PROGRESSION: Archetype[] = [
   { name: "short + filler", build: short },
 ];
 
-const ARCHETYPES = [...SHAPES, ...PROGRESSION];
+/**
+ * Rank progression, held at equal card quality so the only variable is
+ * investment. Ranking must be worth doing without becoming a second cliff on
+ * top of the collection one.
+ */
+const RANKS: Archetype[] = [
+  { name: "ceiling R10", build: () => balanced(10) },
+  { name: "ceiling R1", build: () => balanced(1) },
+  { name: "1 Legend R10", build: () => legendaryAt(10) },
+  { name: "1 Legend R1", build: () => legendaryAt(1) },
+  { name: "2 Epics R5", build: () => epicsAt(5) },
+  { name: "2 Epics R1", build: () => epicsAt(1) },
+];
+
+const ARCHETYPES = [...SHAPES, ...PROGRESSION, ...RANKS];
 
 function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
@@ -167,7 +206,12 @@ const PROGRESSION_TARGET: { a: string; b: string; want: number }[] = [
   { a: "ceiling 2-2-2", b: "rare 2-2-2", want: 82 },
   { a: "ceiling 2-2-2", b: "best mono Duel", want: 68 },
   { a: "best mono Duel", b: "rare 2-2-2", want: 72 },
-  { a: "rare 2-2-2", b: "short + filler", want: 78 },
+  { a: "rare 2-2-2", b: "short + filler", want: 76 },
+  // Ranking is worth doing, but a maxed card must not be a second cliff on top
+  // of the collection one — a month of burning should be an edge, not a wall.
+  { a: "ceiling R10", b: "ceiling R1", want: 72 },
+  { a: "1 Legend R10", b: "1 Legend R1", want: 62 },
+  { a: "2 Epics R5", b: "2 Epics R1", want: 58 },
 ];
 
 const BUILDS = new Map<string, () => Unit[]>(ARCHETYPES.map((x) => [x.name, x.build]));
@@ -228,6 +272,15 @@ const KNOBS: Record<string, Knob> = {
   "ult.vanguard": { get: (t) => t.ult.vanguard.incomingMultiplier, set: (t, v) => (t.ult.vanguard.incomingMultiplier = v), lo: 0.05, hi: 0.9 },
   "ult.strategist": { get: (t) => t.ult.strategist.healFraction, set: (t, v) => (t.ult.strategist.healFraction = v), lo: 0.05, hi: 0.7 },
   powerExponent: { get: (t) => t.powerExponent, set: (t, v) => (t.powerExponent = v), lo: 0.25, hi: 1 },
+  "rank.statBonus": { get: (t) => t.rank.statBonus, set: (t, v) => (t.rank.statBonus = v), lo: 0.02, hi: 0.6 },
+  "rank.chargeBonus": { get: (t) => t.rank.chargeBonus, set: (t, v) => (t.rank.chargeBonus = v), lo: 0.1, hi: 2.5 },
+  "rank.epicPotency": { get: (t) => t.rank.epicPotency, set: (t, v) => (t.rank.epicPotency = v), lo: 0.1, hi: 1 },
+  // Recruits were the one group never fitted, which is why a four-card roster
+  // lost 100% of its matches. Bounded strictly below a Rare so filling slots
+  // never competes with owning cards.
+  "power.recruit": { get: (t) => t.power.recruit, set: (t, v) => (t.power.recruit = v), lo: 2, hi: 9 },
+  "recruit.hp": { get: (t) => t.roles.recruit!.hp, set: (t, v) => (t.roles.recruit!.hp = v), lo: 0.2, hi: 1.4 },
+  "recruit.dmg": { get: (t) => t.roles.recruit!.dmg, set: (t, v) => (t.roles.recruit!.dmg = v), lo: 0.05, hi: 0.9 },
 };
 
 /** Fights outside this many rounds read badly in Discord — too short to have a
@@ -236,6 +289,44 @@ const ROUNDS_BAND = { min: 4, max: 8 };
 
 /** Share of matches in which a Legendary-holding side must land an ultimate. */
 const ULT_FIRE_TARGET = 0.92;
+
+/**
+ * Floors on how much each headline mechanic must actually do.
+ *
+ * The fitter optimises win rates only, so "make the ability negligible" is
+ * always a legal way to hit a modest target — given rank goals of 72/62/58 it
+ * cut Focus Fire to +20% damage, Rally to 5% healing and Epic ultimates to a
+ * tenth potency. Every target was met and the features were gone. These bounds
+ * force the trade-off into the open: if the targets can't be reached with the
+ * mechanics intact, the cost says so instead of quietly deleting them.
+ */
+const FLOORS: { label: string; ok: (t: Tuning) => boolean }[] = [
+  { label: "Focus Fire >= 1.8x", ok: (t) => t.ult.duelist.damageMultiplier >= 1.8 },
+  { label: "Bulwark <= 0.5 incoming", ok: (t) => t.ult.vanguard.incomingMultiplier <= 0.5 },
+  { label: "Rally >= 15% max HP", ok: (t) => t.ult.strategist.healFraction >= 0.15 },
+  { label: "Epic potency >= 0.35", ok: (t) => t.rank.epicPotency >= 0.35 },
+  { label: "rank charge >= +0.5", ok: (t) => t.rank.chargeBonus >= 0.5 },
+  { label: "rank stats >= +8%", ok: (t) => t.rank.statBonus >= 0.08 },
+  /**
+   * A recruit must never rival an owned Rare, or filling empty slots competes
+   * with collecting. Compared as EFFECTIVE contribution (power^exponent x role
+   * weight), not raw weights — the first version compared weights alone, which
+   * capped recruit HP at roughly a third of what it needed to be and left a
+   * four-card roster unable to win a single match.
+   */
+  { label: "recruit weaker than Rare", ok: (t) => t.power.recruit < t.power.rare },
+  { label: "recruit hp below weakest real card", ok: (t) => recruitStat(t, "hp") < weakestRealStat(t, "hp") },
+  { label: "recruit dmg below weakest real card", ok: (t) => recruitStat(t, "dmg") < weakestRealStat(t, "dmg") },
+];
+
+function recruitStat(t: Tuning, key: "hp" | "dmg"): number {
+  return t.power.recruit ** t.powerExponent * t.roles.recruit![key];
+}
+
+function weakestRealStat(t: Tuning, key: "hp" | "dmg"): number {
+  const weakest = Math.min(t.roles.vanguard![key], t.roles.duelist![key], t.roles.strategist![key]);
+  return t.power.rare ** t.powerExponent * weakest;
+}
 
 function evaluate(t: Tuning, seeds: number): { cost: number; stalemates: number } {
   let cost = 0;
@@ -284,6 +375,8 @@ function evaluate(t: Tuning, seeds: number): { cost: number; stalemates: number 
   const fireRate = ultEligible ? ultSeen / ultEligible : 1;
   cost += Math.max(0, ULT_FIRE_TARGET - fireRate) ** 2 * 6000;
 
+  for (const f of FLOORS) if (!f.ok(t)) cost += 4000;
+
   // A stalemate means the escalation valve failed; never trade balance for it.
   return { cost: cost + (stalemates / seeds) * 5000 + overshoot ** 2 * 400, stalemates };
 }
@@ -311,9 +404,19 @@ function fit(iterations: number, seeds: number): Tuning {
 
   for (let i = 0; i < iterations; i++) {
     // Anneal: broad exploration early, fine adjustment late.
-    const sigma = 0.18 * (1 - i / iterations) + 0.02;
+    const sigma = 0.25 * (1 - i / iterations) + 0.03;
     const candidate = structuredClone(best) as Tuning;
-    for (const name of names) {
+
+    /**
+     * Perturb a handful of knobs, not all of them. With ~30 dimensions,
+     * moving every one at a time means almost every proposal is worse in at
+     * least one direction and nothing is ever accepted — a 2,500-iteration run
+     * finished having accepted zero moves and reported its own input back as
+     * the "fit". A small random subset keeps the acceptance rate usable.
+     */
+    const picks = 1 + Math.floor(roll() * 3);
+    for (let p = 0; p < picks; p++) {
+      const name = names[Math.floor(roll() * names.length)]!;
       const k = KNOBS[name]!;
       const scaled = k.get(best) * Math.exp(gaussian(roll) * sigma);
       k.set(candidate, Math.min(k.hi, Math.max(k.lo, scaled)));
@@ -395,6 +498,7 @@ function matrix(title: string, group: typeof ARCHETYPES): void {
 
 matrix("SHAPE — equal investment (all six Rares), row vs column:", SHAPES);
 matrix("PROGRESSION — unequal investment, row vs column:", PROGRESSION);
+matrix("RANK — same cards, different investment, row vs column:", RANKS);
 
 console.log(`\nAverage match length: ${(totalRounds / matches).toFixed(1)} rounds`);
 console.log(

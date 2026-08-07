@@ -33,11 +33,19 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const rarity = interaction.options.getString("rarity", true) as SellRarity;
   const meta = RARITY_META[rarity as Rarity];
 
-  const cards = await ownedAtRarity(guildId, interaction.user.id, rarity);
+  const all = await ownedAtRarity(guildId, interaction.user.id, rarity);
+  // Ranked cards are never included. Rank pays nothing on a sale — sell value
+  // is rarity-only — so bulk-selling one destroys weeks of claim quota for
+  // pocket change. `/sell` can still do it deliberately, one card at a time.
+  const cards = all.filter((c) => c.rank === 1);
+  const protectedCards = all.filter((c) => c.rank > 1);
 
   if (cards.length === 0) {
     return interaction.editReply({
-      content: `You don't own any ${meta.label} cards in this server.`,
+      content: protectedCards.length
+        ? `Your only ${meta.label} card(s) are ranked up, so /sellall skips them. ` +
+          `Use /sell if you really mean to sell one.`
+        : `You don't own any ${meta.label} cards in this server.`,
     });
   }
 
@@ -69,6 +77,17 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     .setFooter({
       text: "This cannot be undone. Every card listed returns to the pool for anyone to claim.",
     });
+
+  if (protectedCards.length) {
+    embed.addFields({
+      name: `🔒 Skipped ${protectedCards.length} ranked card(s)`,
+      value: [
+        ...protectedCards.slice(0, 8).map((c) => `• ${c.hero} — ${c.name} (R${c.rank})`),
+        ...(protectedCards.length > 8 ? [`…and ${protectedCards.length - 8} more`] : []),
+        "Ranked cards are never bulk-sold. Use /sell for those.",
+      ].join("\n"),
+    });
+  }
 
   if (rarity === "legendary") {
     embed.addFields({

@@ -17,6 +17,8 @@ import * as cdcheck from "./cdcheck.js";
 import * as showcase from "./showcase.js";
 import * as give from "./give.js";
 import * as buy from "./buy.js";
+import * as rankup from "./rankup.js";
+import * as leaderboard from "./leaderboard.js";
 
 export interface Command {
   data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder;
@@ -40,7 +42,9 @@ export const commands = new Map<string, Command>(
       sellall,
       give,
       buy,
+      rankup,
       flexers,
+      leaderboard,
     ] as unknown as Command[]
   ).map((c) => [c.data.name, c]),
 );

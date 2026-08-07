@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   pgEnum,
@@ -9,6 +10,7 @@ import {
   primaryKey,
   uniqueIndex,
   index,
+  check,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -116,11 +118,61 @@ export const claims = pgTable(
       .notNull()
       .references(() => cards.id, { onDelete: "cascade" }),
     claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * 1..10, Epics and Legendaries only. Deliberately on the claim rather than
+     * on `cards`: rank is per-guild because ownership is, and putting it on the
+     * global card row would leak one server's investment into every other.
+     *
+     * Because it lives here, every rule falls out for free. Selling or burning
+     * deletes the row, so rank is destroyed and the card returns to the pool at
+     * rank 1. Trading keeps it, because `executeSwap` and `/give` move
+     * ownership with an UPDATE on this row rather than recreating it.
+     */
+    rank: integer("rank").notNull().default(1),
   },
   (t) => ({
     // The race is resolved by this constraint, not by application logic.
     oneOwnerPerGuild: uniqueIndex("claims_guild_card_uniq").on(t.guildId, t.cardId),
     byOwner: index("claims_owner_idx").on(t.guildId, t.userId),
+    // Enforced in the database, not just in the burn code: a rank outside the
+    // ladder means a write went wrong, and it should fail loudly at the point
+    // of the bug rather than surface later as a mis-tuned battle.
+    rankRange: check("claims_rank_range", sql`${t.rank} BETWEEN 1 AND 10`),
+  }),
+);
+
+/**
+ * Append-only record of every rank-up. Burning destroys cards irreversibly, so
+ * without a ledger "the bot ate my Legendary" is unfalsifiable — and with
+ * fodder returning to the pool, there is otherwise no trace at all that a card
+ * ever belonged to anyone.
+ *
+ * Fodder is stored as raw card ids rather than foreign keys: the claims are
+ * gone by the time the row is written, and the audit must survive a card being
+ * retired from `cards` later.
+ */
+export const burns = pgTable(
+  "burns",
+  {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id")
+      .notNull()
+      .references(() => guildSettings.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** The card that was ranked up. */
+    targetCardId: text("target_card_id").notNull(),
+    fromRank: integer("from_rank").notNull(),
+    toRank: integer("to_rank").notNull(),
+    /** Card ids consumed, in the order they were spent. */
+    fodderCardIds: text("fodder_card_ids").array().notNull(),
+    fodderPoints: integer("fodder_points").notNull(),
+    shardsSpent: integer("shards_spent").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    byUser: index("burns_user_idx").on(t.guildId, t.userId, t.createdAt),
   }),
 );
 

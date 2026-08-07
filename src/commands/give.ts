@@ -65,6 +65,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     .select({
       name: schema.cards.name,
       rarity: schema.cards.rarity,
+      rank: schema.claims.rank,
       image: schema.cards.imageUrl,
       hero: schema.heroes.name,
     })
@@ -96,7 +97,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     .setDescription(
       `You are about to give this card to <@${recipient.id}>:\n\n` +
         `## ${meta.emoji} ${owned.hero} — ${owned.name}\n` +
-        `**${meta.label}** · worth 💠 ${SELL_VALUE[rarity]}`,
+        `**${meta.label}**${owned.rank > 1 ? ` · **Rank ${owned.rank}**` : ""} · worth 💠 ${SELL_VALUE[rarity]}`,
     )
     .setFooter({
       text:

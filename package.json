@@ -23,7 +23,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "sim": "tsx scripts/battle-sim.ts",
-    "test": "tsx --test tests/concurrency.test.ts tests/battle.test.ts",
+    "test": "tsx --test tests/concurrency.test.ts tests/battle.test.ts tests/rankup.test.ts",
     "test:unit": "tsx --test tests/battle.test.ts",
     "typecheck": "tsc --noEmit"
   },

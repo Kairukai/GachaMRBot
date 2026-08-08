@@ -110,12 +110,28 @@ export async function setTeam(
   for (const [i, input] of slots.entries()) {
     const row = byCard.get(input.cardId)!;
     const options = parseRoles(row.heroRole);
-    const role = input.role ?? (options.length === 1 ? options[0] : undefined);
+
+    /**
+     * A hero with exactly one role has no choice to make, so a declared role is
+     * simply irrelevant to it.
+     *
+     * This is load-bearing, not a nicety. `wildcard_role` is a SINGLE global
+     * option on `/team set`, not one per card — so it arrives attached to every
+     * slot. Letting a declaration override an unambiguous hero meant that
+     * supplying it (which the bot demands the moment Deadpool is in the team)
+     * rejected every other hero who didn't happen to play that role: Magik,
+     * Luna Snow and the rest were reported as wildcards they aren't.
+     *
+     * Only a genuinely multi-role hero consults the declaration.
+     */
+    const role =
+      options.length === 1
+        ? options[0]
+        : input.role && (options.length === 0 || options.includes(input.role))
+          ? input.role
+          : undefined;
+
     if (!role) {
-      needsRole.push({ cardId: input.cardId, hero: row.hero, options });
-      continue;
-    }
-    if (options.length && !options.includes(role)) {
       needsRole.push({ cardId: input.cardId, hero: row.hero, options });
       continue;
     }

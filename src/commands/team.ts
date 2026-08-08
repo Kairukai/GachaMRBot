@@ -107,10 +107,13 @@ async function setCommand(interaction: ChatInputCommandInteraction) {
       });
     }
     if ("needsRole" in result) {
-      const names = result.needsRole.map((r) => r.hero).join(", ");
+      const lines = result.needsRole.map((r) =>
+        r.options.length > 1
+          ? `• **${r.hero}** can play ${r.options.join(", ")} — pick one with \`wildcard_role\`.`
+          : `• **${r.hero}** has no role on record, so pick one with \`wildcard_role\`.`,
+      );
       return interaction.editReply({
-        content:
-          `${names} can play more than one role, so pick one with the \`wildcard_role\` option.`,
+        content: ["Some heroes need a role declared:", ...lines].join("\n"),
       });
     }
     const lines = result.violations.map((v) => {

@@ -156,7 +156,39 @@ test("a third Epic and a second same-role Legendary are rejected", async () => {
   assert.ok(sameRole.violations.some((v) => v.code === "legendary_role_cap"));
 });
 
-test("a role the hero can't play is refused", async () => {
+test("wildcard_role only applies to the hero that needs it", async () => {
+  await fresh();
+
+  // The reported bug: including Deadpool forces you to supply wildcard_role,
+  // and that role was then applied to EVERY slot — so every hero who didn't
+  // happen to play it was rejected as if it were a wildcard too.
+  const rows = await db.execute(sql`
+    SELECT DISTINCT ON (c.hero_id) c.id, h.name, h.role
+    FROM cards c JOIN heroes h ON h.id = c.hero_id
+    WHERE h.role LIKE '%/%'
+    ORDER BY c.hero_id, c.id LIMIT 1
+  `);
+  const multi = (rows as unknown as { id: string; name: string }[])[0];
+  assert.ok(multi, "pool has no multi-role hero to test with");
+
+  const others = await distinctHeroCards("rare", TEAM_SIZE - 1);
+  await give(U, [multi.id, ...others]);
+
+  const res = await setTeam(
+    G,
+    U,
+    [multi.id, ...others].map((cardId) => ({ cardId, role: "duelist" as const })),
+  );
+  assert.ok(res.ok, `single global wildcard broke the line-up: ${JSON.stringify(res)}`);
+
+  // The multi-role hero takes the declared role; everyone else keeps their own.
+  const wild = res.team.find((c) => c.cardId === multi.id)!;
+  assert.equal(wild.role, "duelist");
+  const roles = new Set(res.team.map((c) => c.role));
+  assert.ok(roles.size > 1, "every card was flattened onto the declared role");
+});
+
+test("a declared role is ignored for a hero with only one", async () => {
   await fresh();
   const [card] = await distinctHeroCards("rare", 1);
   await give(U, [card!]);
@@ -167,9 +199,12 @@ test("a role the hero can't play is refused", async () => {
   const actual = parseRoles(row!.role)[0]!;
   const wrong = (["vanguard", "duelist", "strategist"] as const).find((r) => r !== actual)!;
 
+  // `wildcard_role` is a single global option, not a per-card one, so a
+  // declaration that contradicts an unambiguous hero is the user answering a
+  // different question — take the hero's real role rather than rejecting them.
   const res = await setTeam(G, U, [{ cardId: card!, role: wrong }]);
-  assert.ok(!res.ok);
-  assert.ok("needsRole" in res);
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.team[0]!.role, actual);
 });
 
 test("cards you don't own are refused", async () => {

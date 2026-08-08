@@ -2,6 +2,7 @@ import { EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlag
 import { and, eq, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { RARITY_META } from "./gacha.js";
+import { rankBadge } from "./badges.js";
 export const TRADE_PREFIX = "trade:";
 /** Offers go stale rather than lingering forever. */
 export const TRADE_TTL_MS = 5 * 60 * 1000;
@@ -59,7 +60,15 @@ export async function executeSwap(tradeId) {
         return "ok";
     }).catch(() => "ownership-changed");
 }
-export async function cardLabel(cardId) {
+/**
+ * Human label for a card. Pass `guildId` to include its rank.
+ *
+ * Rank is per-guild because it lives on the claim, so it can only be resolved
+ * with a guild in hand. Any surface where cards change owner MUST pass it: a
+ * one-for-one swap that hides rank lets someone trade a rank-9 for a rank-1 of
+ * the same rarity and see nothing wrong.
+ */
+export async function cardLabel(cardId, guildId) {
     const [c] = await db
         .select({
         name: schema.cards.name,
@@ -71,7 +80,16 @@ export async function cardLabel(cardId) {
         .where(eq(schema.cards.id, cardId));
     if (!c)
         return cardId;
-    return `${RARITY_META[c.rarity].emoji} ${c.hero} — ${c.name}`;
+    let rankSuffix = "";
+    if (guildId) {
+        const [claim] = await db
+            .select({ rank: schema.claims.rank })
+            .from(schema.claims)
+            .where(and(eq(schema.claims.guildId, guildId), eq(schema.claims.cardId, cardId)));
+        if (claim && claim.rank > 1)
+            rankSuffix = ` · ${rankBadge(claim.rank)}`;
+    }
+    return `${RARITY_META[c.rarity].emoji} ${c.hero} — ${c.name}${rankSuffix}`;
 }
 export async function handleTradeButton(interaction) {
     const rest = interaction.customId.slice(TRADE_PREFIX.length);
@@ -136,8 +154,8 @@ export async function handleTradeButton(interaction) {
         .setTitle("Trade complete")
         .setColor(0x22c55e)
         .setDescription(`<@${trade.proposerId}> ⇄ <@${trade.receiverId}>\n\n` +
-        `<@${trade.receiverId}> received **${await cardLabel(trade.offerCardId)}**\n` +
-        `<@${trade.proposerId}> received **${await cardLabel(trade.wantCardId)}**`);
+        `<@${trade.receiverId}> received **${await cardLabel(trade.offerCardId, trade.guildId)}**\n` +
+        `<@${trade.proposerId}> received **${await cardLabel(trade.wantCardId, trade.guildId)}**`);
     await interaction.update({ embeds: [embed], components: [settledRow("Traded")] });
 }
 /** Cards a user currently owns in a guild, for autocomplete. */
@@ -148,6 +166,7 @@ export async function ownedCards(guildId, userId, query) {
         name: schema.cards.name,
         rarity: schema.cards.rarity,
         hero: schema.heroes.name,
+        rank: schema.claims.rank,
     })
         .from(schema.claims)
         .innerJoin(schema.cards, eq(schema.claims.cardId, schema.cards.id))
@@ -158,7 +177,9 @@ export async function ownedCards(guildId, userId, query) {
         .limit(25);
     return rows.map((r) => ({
         // Discord caps choice names at 100 characters.
-        name: `${RARITY_META[r.rarity].label} · ${r.hero} — ${r.name}`.slice(0, 100),
+        // Rank goes in the autocomplete label as well: it is the last thing a user
+        // sees before picking a card to trade, give or sell.
+        name: `${RARITY_META[r.rarity].label}${r.rank > 1 ? ` R${r.rank}` : ""} · ${r.hero} — ${r.name}`.slice(0, 100),
         value: r.id,
     }));
 }

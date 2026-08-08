@@ -10,6 +10,7 @@ import { TEAM_SIZE, MAX_EPICS, type Role } from "../lib/battle.js";
 import { ownedCards } from "../lib/trade.js";
 import { clearTeam, resolveTeam, setTeam, type SlotInput } from "../lib/team.js";
 import { teamPower } from "../lib/challenge.js";
+import { rankPrefix } from "../lib/badges.js";
 
 const SLOT_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
 
@@ -176,8 +177,7 @@ async function viewCommand(interaction: ChatInputCommandInteraction) {
     .map((s) => {
       if (!s.card) return `\`${s.slot}\` ⬜ *Recruit* — empty slot`;
       const m = RARITY_META[s.card.rarity];
-      const rank = s.card.rank > 1 ? ` \`R${s.card.rank}\`` : "";
-      return `\`${s.slot}\` ${m.emoji} **${s.card.hero}** — ${s.card.name}${rank} · *${s.card.role}*`;
+      return `\`${s.slot}\` ${m.emoji} ${rankPrefix(s.card.rank)}**${s.card.hero}** — ${s.card.name} · *${s.card.role}*`;
     })
     .join("\n");
 
@@ -216,8 +216,7 @@ function renderTeam(username: string, team: { slot: number; hero: string; name: 
   const body = team
     .map((c) => {
       const m = RARITY_META[c.rarity];
-      const rank = c.rank > 1 ? ` \`R${c.rank}\`` : "";
-      return `\`${c.slot}\` ${m.emoji} **${c.hero}** — ${c.name}${rank} · *${c.role}*`;
+      return `\`${c.slot}\` ${m.emoji} ${rankPrefix(c.rank)}**${c.hero}** — ${c.name} · *${c.role}*`;
     })
     .join("\n");
 

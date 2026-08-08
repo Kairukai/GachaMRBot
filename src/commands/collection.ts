@@ -12,6 +12,7 @@ import { and, eq, desc, sql, count } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { RARITY_META, type Rarity } from "../lib/gacha.js";
 import { getShards } from "../lib/state.js";
+import { rankPrefix } from "../lib/badges.js";
 
 const PAGE_SIZE = 10;
 
@@ -76,8 +77,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
         const m = RARITY_META[r.rarity as Rarity];
         // Rank is shown here because it is the only place a player reviews the
         // whole collection before deciding what to sell, trade or burn.
-        const rank = r.rank > 1 ? ` \`R${r.rank}\`` : "";
-        return `${m.emoji} **${r.heroName}** — ${r.name}${rank}`;
+        return `${m.emoji} ${rankPrefix(r.rank)}**${r.heroName}** — ${r.name}`;
       })
       .join("\n");
 

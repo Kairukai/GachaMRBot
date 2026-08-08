@@ -6,7 +6,10 @@ import { handleTradeButton, TRADE_PREFIX } from "./lib/trade.js";
 import { handleSellButton, SELL_PREFIX } from "./lib/sell.js";
 import { handleGiveButton, GIVE_PREFIX } from "./lib/give.js";
 import { handleBuyButton, BUY_PREFIX } from "./lib/shop.js";
+import { handleRankUpButton, RANKUP_PREFIX } from "./lib/rankup.js";
+import { handleChallengeButton, CHALLENGE_PREFIX } from "./lib/wager.js";
 import { startHealthServer } from "./lib/health.js";
+import { loadRankBadges } from "./lib/badges.js";
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
     const envFile = process.env.DOTENV_CONFIG_PATH ?? ".env";
@@ -38,8 +41,10 @@ const client = new Client({
         AutoModerationRuleManager: 0,
     }),
 });
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
     console.log(`Logged in as ${c.user.tag} (${c.guilds.cache.size} guilds)`);
+    // Application emojis can only be fetched once the client is ready.
+    await loadRankBadges(c);
 });
 // No-op unless PORT is set (Render and similar). Reports 503 until the gateway
 // is up, so a platform health check can't call a half-started bot healthy.
@@ -60,7 +65,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
                         ? handleGiveButton
                         : id.startsWith(BUY_PREFIX)
                             ? handleBuyButton
-                            : null;
+                            : id.startsWith(RANKUP_PREFIX)
+                                ? handleRankUpButton
+                                : id.startsWith(CHALLENGE_PREFIX)
+                                    ? handleChallengeButton
+                                    : null;
         if (!handler)
             return;
         try {

@@ -9,6 +9,7 @@ import { handleBuyButton, BUY_PREFIX } from "./lib/shop.js";
 import { handleRankUpButton, RANKUP_PREFIX } from "./lib/rankup.js";
 import { handleChallengeButton, CHALLENGE_PREFIX } from "./lib/wager.js";
 import { startHealthServer } from "./lib/health.js";
+import { loadRankBadges } from "./lib/badges.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -45,8 +46,10 @@ const client = new Client({
   }),
 });
 
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag} (${c.guilds.cache.size} guilds)`);
+  // Application emojis can only be fetched once the client is ready.
+  await loadRankBadges(c);
 });
 
 // No-op unless PORT is set (Render and similar). Reports 503 until the gateway

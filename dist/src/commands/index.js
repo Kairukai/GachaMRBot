@@ -11,6 +11,10 @@ import * as cdcheck from "./cdcheck.js";
 import * as showcase from "./showcase.js";
 import * as give from "./give.js";
 import * as buy from "./buy.js";
+import * as rankup from "./rankup.js";
+import * as leaderboard from "./leaderboard.js";
+import * as team from "./team.js";
+import * as challenge from "./challenge.js";
 export const commands = new Map([
     roll,
     roll5,
@@ -24,6 +28,10 @@ export const commands = new Map([
     sellall,
     give,
     buy,
+    rankup,
     flexers,
+    leaderboard,
+    team,
+    challenge,
 ].map((c) => [c.data.name, c]));
 //# sourceMappingURL=index.js.map

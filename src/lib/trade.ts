@@ -9,6 +9,7 @@ import {
 import { and, eq, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { RARITY_META, type Rarity } from "./gacha.js";
+import { rankBadge } from "./badges.js";
 
 export const TRADE_PREFIX = "trade:";
 
@@ -122,7 +123,7 @@ export async function cardLabel(cardId: string, guildId?: string): Promise<strin
       .select({ rank: schema.claims.rank })
       .from(schema.claims)
       .where(and(eq(schema.claims.guildId, guildId), eq(schema.claims.cardId, cardId)));
-    if (claim && claim.rank > 1) rankSuffix = ` · **R${claim.rank}**`;
+    if (claim && claim.rank > 1) rankSuffix = ` · ${rankBadge(claim.rank)}`;
   }
 
   return `${RARITY_META[c.rarity as Rarity].emoji} ${c.hero} — ${c.name}${rankSuffix}`;

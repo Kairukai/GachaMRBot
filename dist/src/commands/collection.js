@@ -3,6 +3,7 @@ import { and, eq, desc, sql, count } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { RARITY_META } from "../lib/gacha.js";
 import { getShards } from "../lib/state.js";
+import { rankPrefix } from "../lib/badges.js";
 const PAGE_SIZE = 10;
 export const data = new SlashCommandBuilder()
     .setName("collection")
@@ -40,18 +41,21 @@ export async function execute(interaction) {
             rarity: schema.cards.rarity,
             heroName: schema.heroes.name,
             claimedAt: schema.claims.claimedAt,
+            rank: schema.claims.rank,
         })
             .from(schema.claims)
             .innerJoin(schema.cards, eq(schema.claims.cardId, schema.cards.id))
             .innerJoin(schema.heroes, eq(schema.cards.heroId, schema.heroes.id))
             .where(and(eq(schema.claims.guildId, guildId), eq(schema.claims.userId, target.id)))
-            .orderBy(desc(RARITY_RANK), desc(schema.claims.claimedAt))
+            .orderBy(desc(RARITY_RANK), desc(schema.claims.rank), desc(schema.claims.claimedAt))
             .limit(PAGE_SIZE)
             .offset(page * PAGE_SIZE);
         const body = rows
             .map((r) => {
             const m = RARITY_META[r.rarity];
-            return `${m.emoji} **${r.heroName}** — ${r.name}`;
+            // Rank is shown here because it is the only place a player reviews the
+            // whole collection before deciding what to sell, trade or burn.
+            return `${m.emoji} ${rankPrefix(r.rank)}**${r.heroName}** — ${r.name}`;
         })
             .join("\n");
         const shards = await getShards(target.id);

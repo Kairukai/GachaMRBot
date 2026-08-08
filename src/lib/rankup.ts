@@ -24,6 +24,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { RARITY_META, type Rarity } from "./gacha.js";
 import { MAX_RANK } from "./battle.js";
+import { rankBadge } from "./badges.js";
 
 /**
  * What each rarity is worth as fodder.
@@ -76,6 +77,12 @@ export const RANK_COST: Record<number, RankCost> = {
 const RANKABLE: ReadonlySet<Rarity> = new Set<Rarity>(["epic", "legendary"]);
 
 export const RANKUP_PREFIX = "rankup:";
+
+/**
+ * Rank-ups are announced publicly from here up. Below it they are frequent and
+ * cheap enough that announcing would just be spam.
+ */
+export const ANNOUNCE_FROM_RANK = 5;
 
 /** Cards eligible to be ranked up, for `/rankup` autocomplete. */
 export async function rankableOwned(guildId: string, userId: string, query: string) {
@@ -603,4 +610,27 @@ export async function handleRankUpButton(interaction: ButtonInteraction) {
   if (state.image) embed.setThumbnail(state.image);
 
   await interaction.update({ embeds: [embed], components: [settledRow("Ranked up")] });
+
+  /**
+   * Public brag, on top of the private confirmation — same shape as `/give`,
+   * which follows up non-ephemerally after an ephemeral flow.
+   *
+   * Only from ANNOUNCE_FROM_RANK up. Rank 2 costs eight fodder points, so early
+   * ranks are frequent and cheap; announcing every one would be noise in a busy
+   * server. The threshold sits where the Legendary gate and the Epic ultimate
+   * unlock both start, which is the first rank that represents real commitment.
+   */
+  if (result.toRank >= ANNOUNCE_FROM_RANK) {
+    const shout = new EmbedBuilder()
+      .setColor(RARITY_META[state.rarity as Rarity].color)
+      .setDescription(
+        `${rankBadge(result.toRank)} <@${userId}> ranked up ` +
+          `**${state.hero} — ${state.name}** to **Rank ${result.toRank}**!` +
+          (result.toRank === MAX_RANK ? "\nThat's the ceiling. Nothing goes higher." : ""),
+      );
+    if (state.image) shout.setThumbnail(state.image);
+    // Never let a failed announcement look like a failed rank-up: the burn is
+    // already committed by this point.
+    await interaction.followUp({ embeds: [shout] }).catch(() => {});
+  }
 }

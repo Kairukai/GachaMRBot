@@ -15,7 +15,14 @@ import postgres from "postgres";
 const url = process.env.DATABASE_URL;
 if (!url)
     throw new Error("DATABASE_URL is not set");
-const client = postgres(url, { max: 1 });
+/**
+ * DB_SSL is honoured here for the same reason src/db/index.ts honours it:
+ * managed Postgres requires TLS but hosts differ on whether the URL carries
+ * `?sslmode=`. Without this the bot would connect happily while migrations
+ * failed against the very same database — a confusing way to find out.
+ */
+const forceSsl = /^(1|true|require)$/i.test(process.env.DB_SSL ?? "");
+const client = postgres(url, { max: 1, ...(forceSsl ? { ssl: "require" } : {}) });
 try {
     await migrate(drizzle(client), {
         migrationsFolder: path.resolve(process.cwd(), "drizzle"),

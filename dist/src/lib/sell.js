@@ -19,13 +19,20 @@ function settledRow(label) {
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(true));
 }
-/** Cards the user owns in this guild at a given rarity, for previews. */
+/**
+ * Cards the user owns in this guild at a given rarity, for previews.
+ *
+ * Returns rank so callers can separate ranked cards out. A bulk sell must never
+ * silently destroy one: rank is worth weeks of claim quota and pays nothing
+ * extra, because sell value is rarity-only.
+ */
 export async function ownedAtRarity(guildId, userId, rarity) {
     return db
         .select({
         id: schema.cards.id,
         name: schema.cards.name,
         hero: schema.heroes.name,
+        rank: schema.claims.rank,
     })
         .from(schema.claims)
         .innerJoin(schema.cards, eq(schema.claims.cardId, schema.cards.id))
@@ -62,15 +69,21 @@ export async function sellOne(guildId, userId, cardId) {
     });
 }
 /**
- * Bulk sell every card of one rarity. Payout is derived from the rows actually
- * deleted, not from a count taken when the prompt was built — otherwise a trade
- * completing in between would pay for cards the user no longer owns.
+ * Bulk sell every UNRANKED card of one rarity. Payout is derived from the rows
+ * actually deleted, not from a count taken when the prompt was built —
+ * otherwise a trade completing in between would pay for cards the user no
+ * longer owns.
+ *
+ * Ranked cards are excluded in the DELETE itself, not merely filtered out of
+ * the preview: a rank-up landing between prompt and click must not slip a card
+ * into the sale. Selling one is still possible through `/sell`, which names it
+ * and its rank individually.
  */
 export async function sellAll(guildId, userId, rarity) {
     return db.transaction(async (tx) => {
         const removed = await tx
             .delete(schema.claims)
-            .where(and(eq(schema.claims.guildId, guildId), eq(schema.claims.userId, userId), sql `${schema.claims.cardId} IN (SELECT id FROM cards WHERE rarity = ${rarity})`))
+            .where(and(eq(schema.claims.guildId, guildId), eq(schema.claims.userId, userId), eq(schema.claims.rank, 1), sql `${schema.claims.cardId} IN (SELECT id FROM cards WHERE rarity = ${rarity})`))
             .returning({ id: schema.claims.id });
         if (removed.length === 0)
             return { sold: 0, shards: 0, balance: 0 };

@@ -39,6 +39,7 @@ export async function execute(interaction) {
         rarity: schema.cards.rarity,
         hero: schema.heroes.name,
         image: schema.cards.imageUrl,
+        rank: schema.claims.rank,
     })
         .from(schema.claims)
         .innerJoin(schema.cards, eq(schema.claims.cardId, schema.cards.id))
@@ -58,7 +59,7 @@ export async function execute(interaction) {
         .setColor(meta.color)
         .setDescription(`You are about to sell:\n\n` +
         `## ${meta.emoji} ${owned.hero} — ${owned.name}\n` +
-        `**${meta.label}** · worth **💠 ${payout}** shards`)
+        `**${meta.label}**${owned.rank > 1 ? ` · **Rank ${owned.rank}**` : ""} · worth **💠 ${payout}** shards`)
         .addFields({ name: "Balance after", value: `💠 ${balance + payout}`, inline: true }, {
         name: "That buys",
         value: `${Math.floor((balance + payout) / ROLL_PRICE_SHARDS)} roll(s)`,
@@ -67,11 +68,26 @@ export async function execute(interaction) {
         .setFooter({
         text: "This cannot be undone. The card returns to the pool for anyone to claim.",
     });
+    /**
+     * Rank pays nothing on a sale — sell value is rarity-only — so selling a
+     * ranked card destroys every burn that went into it for the same shards an
+     * unranked copy would fetch. Say so plainly rather than letting the number
+     * look normal.
+     */
+    if (owned.rank > 1) {
+        embed.addFields({
+            name: `🛑 This card is Rank ${owned.rank}`,
+            value: "Rank is worth nothing on a sale and cannot be recovered. The card " +
+                "returns to the pool at Rank 1.",
+        });
+    }
     if (owned.image)
         embed.setThumbnail(owned.image);
     return interaction.editReply({
         embeds: [embed],
-        components: [confirmRow(`one:${cardId}`, `Sell for 💠 ${payout}`, rarity === "legendary")],
+        components: [
+            confirmRow(`one:${cardId}`, `Sell for 💠 ${payout}`, rarity === "legendary" || owned.rank > 1),
+        ],
     });
 }
 //# sourceMappingURL=sell.js.map

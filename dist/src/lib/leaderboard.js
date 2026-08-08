@@ -70,4 +70,90 @@ export async function memberRank(guildId, userId) {
     const row = rows[0];
     return row ? { rank: Number(row.rank), value: Number(row.value) } : null;
 }
+export const CATEGORY_META = {
+    value: { label: "Collection value", description: "Total sell value of everything owned", unit: "💠" },
+    cards: { label: "Cards owned", description: "Raw collection size", unit: "cards" },
+    rank: { label: "Highest rank", description: "Best single ranked card, then total ranks invested", unit: "" },
+    burned: { label: "Cards burned", description: "Fodder fed into rank-ups", unit: "burned" },
+};
+/**
+ * Per-category aggregate, as a CTE producing (user_id, score, tiebreak, detail).
+ *
+ * Written as raw SQL rather than the query builder because `burned` reads from
+ * a different table entirely, and because RANK() over the same expression is
+ * what lets a member see their standing without paging to find themselves.
+ *
+ * `value` deliberately reuses the SELL_VALUE numbers, same as the paged
+ * leaderboard above — three surfaces disagreeing about what a collection is
+ * worth would be worse than having no leaderboard at all.
+ */
+function categorySource(guildId, category) {
+    switch (category) {
+        case "value":
+            return sql `
+        SELECT cl.user_id,
+               SUM(CASE
+                 WHEN c.rarity = 'rare' THEN ${SELL_VALUE.rare}
+                 WHEN c.rarity = 'epic' THEN ${SELL_VALUE.epic}
+                 WHEN c.rarity = 'legendary' THEN ${SELL_VALUE.legendary}
+                 ELSE 0 END)::int AS score,
+               COUNT(*)::int AS tiebreak,
+               COUNT(*)::text || ' cards' AS detail
+        FROM claims cl JOIN cards c ON c.id = cl.card_id
+        WHERE cl.guild_id = ${guildId}
+        GROUP BY cl.user_id`;
+        case "cards":
+            return sql `
+        SELECT cl.user_id,
+               COUNT(*)::int AS score,
+               COUNT(*) FILTER (WHERE c.rarity = 'legendary')::int AS tiebreak,
+               COUNT(*) FILTER (WHERE c.rarity = 'legendary')::text || ' Legendary, ' ||
+               COUNT(*) FILTER (WHERE c.rarity = 'epic')::text || ' Epic' AS detail
+        FROM claims cl JOIN cards c ON c.id = cl.card_id
+        WHERE cl.guild_id = ${guildId}
+        GROUP BY cl.user_id`;
+        case "rank":
+            // Only ranked cards count, so an untouched collection doesn't appear.
+            return sql `
+        SELECT cl.user_id,
+               MAX(cl.rank)::int AS score,
+               SUM(cl.rank - 1)::int AS tiebreak,
+               SUM(cl.rank - 1)::text || ' ranks invested' AS detail
+        FROM claims cl
+        WHERE cl.guild_id = ${guildId}
+        GROUP BY cl.user_id
+        HAVING MAX(cl.rank) > 1`;
+        case "burned":
+            return sql `
+        SELECT b.user_id,
+               SUM(cardinality(b.fodder_card_ids))::int AS score,
+               COUNT(*)::int AS tiebreak,
+               COUNT(*)::text || ' rank-up(s)' AS detail
+        FROM burns b
+        WHERE b.guild_id = ${guildId}
+        GROUP BY b.user_id`;
+    }
+}
+export async function leaderboardTop(guildId, category, limit = PAGE_SIZE) {
+    const rows = await db.execute(sql `
+    WITH totals AS (${categorySource(guildId, category)})
+    SELECT user_id, score, detail FROM totals
+    ORDER BY score DESC, tiebreak DESC
+    LIMIT ${limit}
+  `);
+    // Aggregates come back as strings over the wire even when cast to int.
+    return rows.map((r) => ({ userId: r.user_id, score: Number(r.score), detail: r.detail }));
+}
+/** Where one member sits in a category, so people off the top ten still know. */
+export async function categoryStanding(guildId, category, userId) {
+    const rows = await db.execute(sql `
+    WITH totals AS (${categorySource(guildId, category)})
+    SELECT rank, score FROM (
+      SELECT user_id, score, RANK() OVER (ORDER BY score DESC, tiebreak DESC) AS rank
+      FROM totals
+    ) ranked WHERE user_id = ${userId}
+  `);
+    const row = rows[0];
+    return row ? { rank: Number(row.rank), score: Number(row.score) } : null;
+}
 //# sourceMappingURL=leaderboard.js.map

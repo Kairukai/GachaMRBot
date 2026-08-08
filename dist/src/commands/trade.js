@@ -99,8 +99,8 @@ export async function execute(interaction) {
         .setTitle("Trade offer")
         .setColor(0xf59e0b)
         .setDescription(`<@${interaction.user.id}> wants to trade with <@${receiver.id}>.\n\n` +
-        `**Giving:** ${await cardLabel(offerCardId)}\n` +
-        `**Wants:** ${await cardLabel(wantCardId)}`)
+        `**Giving:** ${await cardLabel(offerCardId, guildId)}\n` +
+        `**Wants:** ${await cardLabel(wantCardId, guildId)}`)
         .setFooter({ text: "Only the recipient can accept. The proposer can withdraw." })
         .addFields({ name: "Expires", value: `<t:${expiresAt}:R>`, inline: true });
     await interaction.editReply({

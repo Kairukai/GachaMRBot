@@ -1,4 +1,5 @@
-import { pgTable, pgEnum, text, integer, timestamp, serial, boolean, primaryKey, uniqueIndex, index, } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, pgEnum, text, integer, timestamp, serial, boolean, primaryKey, uniqueIndex, index, check, } from "drizzle-orm/pg-core";
 /**
  * Rarity mirrors the in-game costume tiers so drop rates stay defensible:
  * a Legendary card is a Legendary skin, not a number we invented.
@@ -45,6 +46,8 @@ export const guildSettings = pgTable("guild_settings", {
     claimsPerHour: integer("claims_per_hour").notNull().default(2),
     /** How long the Claim button stays live after a drop. */
     claimWindowSec: integer("claim_window_sec").notNull().default(30),
+    /** Challenges per hour. Battles are free but not unlimited. */
+    battlesPerHour: integer("battles_per_hour").notNull().default(10),
     /** When set, /roll only works in this channel. */
     rollChannelId: text("roll_channel_id"),
 });
@@ -71,6 +74,9 @@ export const memberState = pgTable("member_state", {
      */
     bonusRolls: integer("bonus_rolls").notNull().default(0),
     bonusClaims: integer("bonus_claims").notNull().default(0),
+    /** Same hourly-window shape as rolls and claims. */
+    battlesUsed: integer("battles_used").notNull().default(0),
+    battlesResetAt: timestamp("battles_reset_at", { withTimezone: true }),
 }, (t) => ({ pk: primaryKey({ columns: [t.userId, t.guildId] }) }));
 /**
  * Ownership is per-guild and exclusive: within a server, a card has exactly one
@@ -88,10 +94,159 @@ export const claims = pgTable("claims", {
         .notNull()
         .references(() => cards.id, { onDelete: "cascade" }),
     claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * 1..10, Epics and Legendaries only. Deliberately on the claim rather than
+     * on `cards`: rank is per-guild because ownership is, and putting it on the
+     * global card row would leak one server's investment into every other.
+     *
+     * Because it lives here, every rule falls out for free. Selling or burning
+     * deletes the row, so rank is destroyed and the card returns to the pool at
+     * rank 1. Trading keeps it, because `executeSwap` and `/give` move
+     * ownership with an UPDATE on this row rather than recreating it.
+     */
+    rank: integer("rank").notNull().default(1),
 }, (t) => ({
     // The race is resolved by this constraint, not by application logic.
     oneOwnerPerGuild: uniqueIndex("claims_guild_card_uniq").on(t.guildId, t.cardId),
     byOwner: index("claims_owner_idx").on(t.guildId, t.userId),
+    // Enforced in the database, not just in the burn code: a rank outside the
+    // ladder means a write went wrong, and it should fail loudly at the point
+    // of the bug rather than surface later as a mis-tuned battle.
+    rankRange: check("claims_rank_range", sql `${t.rank} BETWEEN 1 AND 10`),
+}));
+/**
+ * Append-only record of every rank-up. Burning destroys cards irreversibly, so
+ * without a ledger "the bot ate my Legendary" is unfalsifiable — and with
+ * fodder returning to the pool, there is otherwise no trace at all that a card
+ * ever belonged to anyone.
+ *
+ * Fodder is stored as raw card ids rather than foreign keys: the claims are
+ * gone by the time the row is written, and the audit must survive a card being
+ * retired from `cards` later.
+ */
+export const burns = pgTable("burns", {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id")
+        .notNull()
+        .references(() => guildSettings.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+        .notNull()
+        .references(() => users.id, { onDelete: "cascade" }),
+    /** The card that was ranked up. */
+    targetCardId: text("target_card_id").notNull(),
+    fromRank: integer("from_rank").notNull(),
+    toRank: integer("to_rank").notNull(),
+    /** Card ids consumed, in the order they were spent. */
+    fodderCardIds: text("fodder_card_ids").array().notNull(),
+    fodderPoints: integer("fodder_points").notNull(),
+    shardsSpent: integer("shards_spent").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+    byUser: index("burns_user_idx").on(t.guildId, t.userId, t.createdAt),
+}));
+/**
+ * A saved 6v6 line-up, one row per filled slot.
+ *
+ * `card_id` references `cards`, deliberately NOT `claims`. A claim row is
+ * deleted whenever the card is sold or burned, and cascading that into someone's
+ * team would silently rewrite their line-up. Ownership is instead re-resolved
+ * at battle time, and a card no longer owned simply drops to recruit filler.
+ *
+ * `role` is stored rather than read off the hero because the wiki lists
+ * Deadpool as all three — the player declares which one he fills, and that
+ * choice is what the one-Legendary-per-role cap is checked against.
+ */
+export const teamSlots = pgTable("team_slots", {
+    guildId: text("guild_id")
+        .notNull()
+        .references(() => guildSettings.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+        .notNull()
+        .references(() => users.id, { onDelete: "cascade" }),
+    slot: integer("slot").notNull(),
+    cardId: text("card_id")
+        .notNull()
+        .references(() => cards.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // vanguard | duelist | strategist
+}, (t) => ({
+    pk: primaryKey({ columns: [t.guildId, t.userId, t.slot] }),
+    slotRange: check("team_slots_slot_range", sql `${t.slot} BETWEEN 1 AND 6`),
+}));
+/**
+ * Completed battles. Rosters are snapshotted as card ids and the RNG seed is
+ * stored, so any match can be replayed and audited exactly as it happened even
+ * after both line-ups change.
+ */
+export const matches = pgTable("matches", {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id")
+        .notNull()
+        .references(() => guildSettings.id, { onDelete: "cascade" }),
+    challengerId: text("challenger_id")
+        .notNull()
+        .references(() => users.id, { onDelete: "cascade" }),
+    defenderId: text("defender_id")
+        .notNull()
+        .references(() => users.id, { onDelete: "cascade" }),
+    challengerCards: text("challenger_cards").array().notNull(),
+    defenderCards: text("defender_cards").array().notNull(),
+    seed: integer("seed").notNull(),
+    winnerId: text("winner_id").notNull(),
+    rounds: integer("rounds").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+    byGuild: index("matches_guild_idx").on(t.guildId, t.createdAt),
+    byChallenger: index("matches_challenger_idx").on(t.guildId, t.challengerId),
+    byDefender: index("matches_defender_idx").on(t.guildId, t.defenderId),
+}));
+export const wagerKind = pgEnum("wager_kind", ["none", "shards", "card"]);
+export const challengeStatus = pgEnum("challenge_status", [
+    "pending",
+    "accepted",
+    "declined",
+    "cancelled",
+]);
+/**
+ * A wagered challenge awaiting the defender's answer.
+ *
+ * Friendly challenges never land here — they resolve instantly, because the
+ * defender risks nothing and so has nothing to consent to. The moment a stake
+ * exists that stops being true: taking someone's card or shards without their
+ * agreement is not a game mechanic, it's theft. So wagered fights get the same
+ * accept/decline handshake as `/trade`.
+ *
+ * Stakes are deliberately NOT escrowed. Locking a card for the life of an offer
+ * is what `executeSwap` avoids and for the same reasons — it deadlocks and it
+ * stops a card appearing in more than one offer. Both stakes are instead
+ * re-validated inside the settlement transaction, so an offer whose stake was
+ * spent or traded away simply fails cleanly.
+ */
+export const challenges = pgTable("challenges", {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id")
+        .notNull()
+        .references(() => guildSettings.id, { onDelete: "cascade" }),
+    challengerId: text("challenger_id")
+        .notNull()
+        .references(() => users.id, { onDelete: "cascade" }),
+    defenderId: text("defender_id")
+        .notNull()
+        .references(() => users.id, { onDelete: "cascade" }),
+    wager: wagerKind("wager").notNull().default("none"),
+    /** Each side stakes this much; the winner takes the loser's half. */
+    stakeShards: integer("stake_shards").notNull().default(0),
+    challengerCardId: text("challenger_card_id").references(() => cards.id, {
+        onDelete: "cascade",
+    }),
+    defenderCardId: text("defender_card_id").references(() => cards.id, {
+        onDelete: "cascade",
+    }),
+    status: challengeStatus("status").notNull().default("pending"),
+    /** Set once fought, so a settled offer points at its result. */
+    matchId: integer("match_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+    byDefender: index("challenges_defender_idx").on(t.guildId, t.defenderId, t.status),
 }));
 export const tradeStatus = pgEnum("trade_status", [
     "pending",

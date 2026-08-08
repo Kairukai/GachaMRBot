@@ -5,6 +5,7 @@ import { RARITY_META, SELL_VALUE, ROLL_PRICE_SHARDS } from "../lib/gacha.js";
 import { getShards } from "../lib/state.js";
 import { ownedCards } from "../lib/trade.js";
 import { confirmRow } from "../lib/sell.js";
+import { rankBadge } from "../lib/badges.js";
 export const data = new SlashCommandBuilder()
     .setName("sell")
     .setDescription("Sell one of your cards for shards.")
@@ -59,7 +60,7 @@ export async function execute(interaction) {
         .setColor(meta.color)
         .setDescription(`You are about to sell:\n\n` +
         `## ${meta.emoji} ${owned.hero} — ${owned.name}\n` +
-        `**${meta.label}**${owned.rank > 1 ? ` · **Rank ${owned.rank}**` : ""} · worth **💠 ${payout}** shards`)
+        `**${meta.label}**${owned.rank > 1 ? ` · ${rankBadge(owned.rank)} **Rank ${owned.rank}**` : ""} · worth **💠 ${payout}** shards`)
         .addFields({ name: "Balance after", value: `💠 ${balance + payout}`, inline: true }, {
         name: "That buys",
         value: `${Math.floor((balance + payout) / ROLL_PRICE_SHARDS)} roll(s)`,

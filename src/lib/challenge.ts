@@ -26,6 +26,7 @@ import {
   type RoundLog,
   type Unit,
 } from "./battle.js";
+import { rankPrefix } from "./badges.js";
 
 export type BattleQuota = { ok: true } | { ok: false; retryAt: Date };
 
@@ -263,7 +264,7 @@ export function renderMatchEmbed(
   if (mvpCard) {
     embed.addFields({
       name: "MVP",
-      value: mvpCard.hero + " - " + mvpCard.name + (mvpCard.rank > 1 ? " (R" + mvpCard.rank + ")" : ""),
+      value: rankPrefix(mvpCard.rank) + mvpCard.hero + " - " + mvpCard.name,
       inline: true,
     });
   }

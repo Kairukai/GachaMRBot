@@ -9,6 +9,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, schema } from "../db/index.js";
 import { RARITY_META, SELL_VALUE, type Rarity } from "../lib/gacha.js";
 import { ownedCards } from "../lib/trade.js";
+import { rankBadge, rankPrefix } from "../lib/badges.js";
 
 export const data = new SlashCommandBuilder()
   .setName("showcase")
@@ -54,6 +55,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
       hero: schema.heroes.name,
       role: schema.heroes.role,
       claimedAt: schema.claims.claimedAt,
+      rank: schema.claims.rank,
     })
     .from(schema.claims)
     .innerJoin(schema.cards, eq(schema.claims.cardId, schema.cards.id))
@@ -86,9 +88,13 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const embed = new EmbedBuilder()
     .setTitle(`${meta.emoji} ${card.hero} — ${card.name}`)
     .setColor(meta.color)
-    .setDescription(`Owned by <@${interaction.user.id}>`)
+    .setDescription(`${rankPrefix(card.rank)}Owned by <@${interaction.user.id}>`)
     .addFields(
       { name: "Rarity", value: meta.label, inline: true },
+      // Field VALUES render custom emoji; field names and the title do not.
+      ...(card.rank > 1
+        ? [{ name: "Rank", value: `${rankBadge(card.rank)} ${card.rank}/10`, inline: true }]
+        : []),
       { name: "Role", value: card.role ?? "—", inline: true },
       { name: "Value", value: `💠 ${SELL_VALUE[rarity]}`, inline: true },
       {

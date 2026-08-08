@@ -18,6 +18,7 @@ import { db, schema } from "../db/index.js";
 import { ensureMember } from "./state.js";
 import { resolveTeam } from "./team.js";
 import { TEAM_SIZE, simulate, teamStats, } from "./battle.js";
+import { rankPrefix } from "./badges.js";
 /**
  * Consumes one challenge from the hourly allowance.
  *
@@ -195,7 +196,7 @@ export function renderMatchEmbed(outcome, challengerName, defenderName, stakeLin
     if (mvpCard) {
         embed.addFields({
             name: "MVP",
-            value: mvpCard.hero + " - " + mvpCard.name + (mvpCard.rank > 1 ? " (R" + mvpCard.rank + ")" : ""),
+            value: rankPrefix(mvpCard.rank) + mvpCard.hero + " - " + mvpCard.name,
             inline: true,
         });
     }

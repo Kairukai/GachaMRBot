@@ -7,6 +7,7 @@ import {
 import { RARITY_META, SELL_VALUE, ROLL_PRICE_SHARDS, type Rarity } from "../lib/gacha.js";
 import { getShards } from "../lib/state.js";
 import { confirmRow, ownedAtRarity, type SellRarity } from "../lib/sell.js";
+import { rankPrefix } from "../lib/badges.js";
 
 export const data = new SlashCommandBuilder()
   .setName("sellall")
@@ -82,7 +83,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     embed.addFields({
       name: `🔒 Skipped ${protectedCards.length} ranked card(s)`,
       value: [
-        ...protectedCards.slice(0, 8).map((c) => `• ${c.hero} — ${c.name} (R${c.rank})`),
+        ...protectedCards.slice(0, 8).map((c) => `• ${rankPrefix(c.rank)}${c.hero} — ${c.name}`),
         ...(protectedCards.length > 8 ? [`…and ${protectedCards.length - 8} more`] : []),
         "Ranked cards are never bulk-sold. Use /sell for those.",
       ].join("\n"),

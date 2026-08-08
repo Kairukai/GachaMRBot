@@ -11,6 +11,7 @@ import { RARITY_META, SELL_VALUE, type Rarity } from "../lib/gacha.js";
 import { ownedCards } from "../lib/trade.js";
 import { giveConfirmRow } from "../lib/give.js";
 import { ensureMember } from "../lib/state.js";
+import { rankBadge } from "../lib/badges.js";
 
 export const data = new SlashCommandBuilder()
   .setName("give")
@@ -97,7 +98,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     .setDescription(
       `You are about to give this card to <@${recipient.id}>:\n\n` +
         `## ${meta.emoji} ${owned.hero} — ${owned.name}\n` +
-        `**${meta.label}**${owned.rank > 1 ? ` · **Rank ${owned.rank}**` : ""} · worth 💠 ${SELL_VALUE[rarity]}`,
+        `**${meta.label}**${owned.rank > 1 ? ` · ${rankBadge(owned.rank)} **Rank ${owned.rank}**` : ""} · worth 💠 ${SELL_VALUE[rarity]}`,
     )
     .setFooter({
       text:
